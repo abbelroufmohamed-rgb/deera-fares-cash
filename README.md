@@ -1,0 +1,2 @@
+# deera-fares-cash
+كاشير
