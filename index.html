@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>مؤسسة ديرة فارس للتجارة | تسوية الورديات النقدية</title>
+
+<!-- PWA: إمكانية تثبيت التطبيق كأيقونة على الجهاز -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f2557">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ديرة فارس">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    direction: rtl;
+    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+    background: #eef2f8;
+    color: #1e293b;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #c7d2e0; border-radius: 4px; }
+  input, select, button { font-family: inherit; }
+  table { border-collapse: collapse; }
+  input:focus, select:focus { outline: none; border-color: #1d4ed8 !important; box-shadow: 0 0 0 3px rgba(29,78,216,0.12); }
+  button:hover { filter: brightness(0.95); }
+  .no-print { }
+  .print-only-header { display: none; }
+  @media print {
+    .no-print { display: none !important; }
+    body { background: #fff; }
+    .print-area { box-shadow: none !important; padding: 0 !important; }
+    .print-only-header { display: block !important; margin-bottom: 16px; font-family: 'Segoe UI', Tahoma, Arial, sans-serif; }
+    .print-only-header h2 { margin: 0 0 4px; color: #0f2557; }
+    .print-only-header div { color: #334155; font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyCJvIjUeWWQdVAbGzeOgBGuar4yQExr0P8",
+    authDomain: "hr-system-67df2.firebaseapp.com",
+    projectId: "hr-system-67df2",
+    storageBucket: "hr-system-67df2.firebasestorage.app",
+    messagingSenderId: "1055159632728",
+    appId: "1:1055159632728:web:e5e4807248e0e6e466db2d",
+  };
+  firebase.initializeApp(firebaseConfig);
+  window.__db = firebase.firestore();
+
+  // تسجيل Service Worker لتفعيل التثبيت كتطبيق (PWA)
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+const db = window.__db;
+
+/* ============ مراجع Firestore ============
+   collection "cashRecon":
+     doc "meta"  -> { branches: [...], shifts: [...] }
+     doc "users" -> { list: [ {id, username, password, name, role, branch} ] }
+   collection "cashReconShifts": مستند لكل وردية مدخلة
+*/
+const META_DOC = db.collection("cashRecon").doc("meta");
+const USERS_DOC = db.collection("cashRecon").doc("users");
+const SHIFTS_COL = db.collection("cashReconShifts");
+
+const DEFAULT_BRANCHES = ["أملج", "الرايس", "ينبع"];
+const DEFAULT_SHIFTS = ["12am-4am", "4am-4pm", "4pm-11pm"];
+
+const ROLE_LABELS = {
+  admin: "أدمن",
+  accountant: "محاسب",
+  branch_manager: "مدير فرع",
+  cashier: "كاشير",
+};
+
+/* ============ ألوان الهوية (أزرق / أبيض) ============ */
+const C = {
+  navy: "#0f2557",
+  blue: "#1d4ed8",
+  blueLight: "#3b82f6",
+  blueSoft: "#eaf1ff",
+  border: "#dde5f0",
+  text: "#1e293b",
+  muted: "#64748b",
+  danger: "#dc2626",
+  success: "#16a34a",
+  bg: "#eef2f8",
+};
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function fmt(n) {
+  const v = Number(n) || 0;
+  return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+function firstDayOfMonth() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+}
+
+/* ============ حساب قيم الوردية ============ */
+function computeShift(s) {
+  const num = (x) => Number(x) || 0;
+  const collection = num(s.collection);
+  const purchases = num(s.purchases);
+  const withdrawals = num(s.withdrawals);
+  const foodicsCash = num(s.foodicsCash);
+  const refund = num(s.refund);
+  const transfer = num(s.transfer);
+  const gulfNetwork = num(s.gulfNetwork);
+  const amex = num(s.amex);
+  const mastercard = num(s.mastercard);
+  const mada = num(s.mada);
+  const visa = num(s.visa);
+  const madaFoodics = num(s.madaFoodics);
+
+  const afterRefund = foodicsCash - refund;
+  const realAmount = collection + purchases + withdrawals;
+  const actualShortage = realAmount - afterRefund;
+
+  const balanceTotal = transfer + gulfNetwork + amex + mastercard + mada + visa;
+  const networkDiff = balanceTotal - madaFoodics;
+
+  const totalCollection = realAmount + balanceTotal;
+  const totalFoodicsSales = foodicsCash + madaFoodics;
+  const totalShortage = totalCollection - totalFoodicsSales;
+
+  return {
+    afterRefund, realAmount, actualShortage,
+    balanceTotal, networkDiff,
+    totalCollection, totalFoodicsSales, totalShortage,
+  };
+}
+
+/* ============ عناصر مشتركة (ثيم أزرق/أبيض) ============ */
+const cardStyle = { background: "#fff", borderRadius: 14, padding: 20, marginBottom: 18, border: "1px solid " + C.border, boxShadow: "0 1px 2px rgba(15,37,87,0.04)" };
+const cardTitle = { fontWeight: 800, fontSize: 15, color: C.navy, marginBottom: 14, paddingBottom: 10, borderBottom: "2px solid " + C.blueSoft, display: "flex", alignItems: "center", gap: 8 };
+const smallLabel = { fontSize: 12, fontWeight: 700, color: C.muted, display: "block", marginBottom: 5 };
+const inputStyle2 = { width: "100%", padding: "9px 10px", borderRadius: 8, border: "1px solid " + C.border, fontSize: 13.5, background: "#fbfcfe", transition: "0.15s" };
+const tblStyle = { width: "100%", fontSize: 13, minWidth: 650 };
+const th = { textAlign: "right", padding: "9px 10px", background: C.blueSoft, color: C.navy, borderBottom: "2px solid " + C.border, whiteSpace: "nowrap", fontWeight: 800, fontSize: 12.5 };
+const td = { padding: "8px 10px", borderBottom: "1px solid #eef1f6", whiteSpace: "nowrap" };
+const smallBtn = { background: C.blue, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" };
+const ghostBtn = { background: "#fff", color: C.blue, border: "1px solid " + C.blue, borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" };
+const dangerBtn = { background: "#fff", color: C.danger, border: "1px solid #fca5a5", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" };
+
+/* ============ تسجيل الدخول ============ */
+function LoginScreen({ users, onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  function submit(e) {
+    e.preventDefault();
+    const u = users.find(
+      (x) => x.username.trim() === username.trim() && x.password === password
+    );
+    if (!u) { setError("اسم المستخدم أو كلمة المرور غير صحيحة"); return; }
+    onLogin(u);
+  }
+
+  return (
+    <div style={{
+      minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+      background: "linear-gradient(135deg,#0f2557,#1d4ed8)"
+    }}>
+      <form onSubmit={submit} style={{
+        background: "#fff", borderRadius: 16, padding: "38px 32px", width: 350,
+        boxShadow: "0 25px 60px rgba(0,0,0,0.35)"
+      }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{
+            width: 54, height: 54, borderRadius: 14, background: C.blueSoft, margin: "0 auto 10px",
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26
+          }}>💼</div>
+          <h2 style={{ margin: "4px 0 2px", color: C.navy, fontSize: 19 }}>مؤسسة ديرة فارس للتجارة</h2>
+          <div style={{ color: C.muted, fontSize: 13 }}>نظام تسوية الورديات النقدية</div>
+        </div>
+        <label style={smallLabel}>اسم المستخدم</label>
+        <input value={username} onChange={(e) => setUsername(e.target.value)} style={{ ...inputStyle2, marginBottom: 14 }} autoFocus />
+        <label style={smallLabel}>كلمة المرور</label>
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle2, marginBottom: 6 }} />
+        {error && <div style={{ color: C.danger, fontSize: 13, marginTop: 6 }}>{error}</div>}
+        <button type="submit" style={{
+          marginTop: 16, width: "100%", padding: "12px 0", background: "linear-gradient(135deg,#1d4ed8,#0f2557)",
+          color: "#fff", border: "none", borderRadius: 9, fontSize: 15, fontWeight: 800, cursor: "pointer"
+        }}>دخول</button>
+      </form>
+    </div>
+  );
+}
+
+/* ============ التطبيق الرئيسي ============ */
+function App() {
+  const [users, setUsers] = useState(null);
+  const [meta, setMeta] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("entry");
+
+  useEffect(() => {
+    const savedSession = localStorage.getItem("cashRecon-session");
+    if (savedSession) {
+      try { setCurrentUser(JSON.parse(savedSession)); } catch (e) {}
+    }
+  }, []);
+
+  useEffect(() => {
+    const unsub1 = USERS_DOC.onSnapshot((doc) => {
+      if (doc.exists && doc.data().list) {
+        setUsers(doc.data().list);
+      } else {
+        const seed = [{ id: uid(), username: "admin", password: "admin123", name: "المدير العام", role: "admin", branch: "" }];
+        USERS_DOC.set({ list: seed });
+        setUsers(seed);
+      }
+    });
+    const unsub2 = META_DOC.onSnapshot((doc) => {
+      if (doc.exists) { setMeta(doc.data()); }
+      else {
+        const seed = { branches: DEFAULT_BRANCHES, shifts: DEFAULT_SHIFTS };
+        META_DOC.set(seed);
+        setMeta(seed);
+      }
+    });
+    return () => { unsub1(); unsub2(); };
+  }, []);
+
+  useEffect(() => { if (users !== null && meta !== null) setLoading(false); }, [users, meta]);
+
+  // مزامنة بيانات المستخدم الحالي مع أي تعديل صلاحيات لحظي
+  useEffect(() => {
+    if (currentUser && users) {
+      const fresh = users.find((u) => u.id === currentUser.id);
+      if (fresh && JSON.stringify(fresh) !== JSON.stringify(currentUser)) {
+        setCurrentUser(fresh);
+        localStorage.setItem("cashRecon-session", JSON.stringify(fresh));
+      }
+      if (!fresh) { handleLogout(); }
+    }
+    // eslint-disable-next-line
+  }, [users]);
+
+  function handleLogin(u) {
+    setCurrentUser(u);
+    localStorage.setItem("cashRecon-session", JSON.stringify(u));
+  }
+  function handleLogout() {
+    setCurrentUser(null);
+    localStorage.removeItem("cashRecon-session");
+  }
+
+  if (loading) return <div style={{ padding: 60, textAlign: "center", color: C.muted }}>جارِ التحميل...</div>;
+  if (!currentUser) return <LoginScreen users={users} onLogin={handleLogin} />;
+
+  return (
+    <MainLayout currentUser={currentUser} users={users} meta={meta} tab={tab} setTab={setTab} onLogout={handleLogout} />
+  );
+}
+
+function MainLayout({ currentUser, users, meta, tab, setTab, onLogout }) {
+  const tabs = [
+    { id: "entry", label: "📝 تسجيل وردية", roles: ["admin", "accountant", "branch_manager", "cashier"] },
+    { id: "report", label: "📊 التقارير", roles: ["admin", "accountant", "branch_manager", "cashier"] },
+    { id: "settings", label: "⚙️ الإعدادات", roles: ["admin"] },
+  ].filter((t) => t.roles.includes(currentUser.role));
+
+  return (
+    <div style={{ minHeight: "100vh" }}>
+      <div className="no-print" style={{
+        background: "linear-gradient(90deg,#0f2557,#1d4ed8)", color: "#fff", padding: "14px 22px",
+        display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
+        boxShadow: "0 2px 10px rgba(15,37,87,0.25)"
+      }}>
+        <div style={{ fontWeight: 800, fontSize: 17, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 20 }}>💼</span>
+          <span>مؤسسة ديرة فارس للتجارة <span style={{ fontWeight: 400, opacity: 0.85, fontSize: 13 }}> · تسوية الورديات النقدية</span></span>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {tabs.map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)} style={{
+              padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer",
+              fontSize: 13.5, fontWeight: 700,
+              background: tab === t.id ? "#fff" : "rgba(255,255,255,0.14)",
+              color: tab === t.id ? C.blue : "#fff",
+              transition: "0.15s"
+            }}>{t.label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+          <span style={{ background: "rgba(255,255,255,0.12)", padding: "6px 12px", borderRadius: 20 }}>
+            {currentUser.name} · {ROLE_LABELS[currentUser.role]}{currentUser.branch ? " · " + currentUser.branch : ""}
+          </span>
+          <button onClick={onLogout} style={{
+            background: "#fff", color: C.danger, border: "none", borderRadius: 7,
+            padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700
+          }}>خروج</button>
+        </div>
+      </div>
+
+      <div style={{ padding: 20, maxWidth: 1360, margin: "0 auto" }}>
+        {tab === "entry" && <EntryTab currentUser={currentUser} meta={meta} users={users} />}
+        {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={users} />}
+        {tab === "settings" && currentUser.role === "admin" && <SettingsTab meta={meta} users={users} />}
+      </div>
+    </div>
+  );
+}
+
+/* ============ تبويب تسجيل الوردية ============ */
+const FIELD_GROUPS = [
+  { title: "الكاش (النقدية)", fields: [
+      { key: "collection", label: "مبلغ التحصيل", type: "number" },
+      { key: "purchases", label: "مشتريات (من الكاش)", type: "number" },
+      { key: "withdrawals", label: "مسحوبات (سلف/صرف)", type: "number" },
+      { key: "note", label: "بيان المشتريات/المسحوبات", type: "text", full: true },
+      { key: "foodicsCash", label: "المبلغ في فودكس (كاش)", type: "number" },
+      { key: "refund", label: "المسترجع", type: "number" },
+  ]},
+  { title: "الشبكة / البطاقات", fields: [
+      { key: "mada", label: "مدى (الفعلي)", type: "number" },
+      { key: "visa", label: "فيزا", type: "number" },
+      { key: "mastercard", label: "ماستركارد", type: "number" },
+      { key: "amex", label: "امريكان إكسبريس", type: "number" },
+      { key: "gulfNetwork", label: "الشبكة الخليجية", type: "number" },
+      { key: "transfer", label: "تحويل بنكي", type: "number" },
+      { key: "madaFoodics", label: "مدى فودكس (تقرير النظام)", type: "number" },
+  ]},
+];
+
+const emptyShift = {
+  branch: "", shiftLabel: "", date: "", receiptNo: "", cashierName: "",
+  collection: "", purchases: "", withdrawals: "", note: "",
+  foodicsCash: "", refund: "",
+  mada: "", visa: "", mastercard: "", amex: "", gulfNetwork: "", transfer: "", madaFoodics: "",
+};
+
+function EntryTab({ currentUser, meta, users }) {
+  const lockedBranch = (currentUser.role === "branch_manager" || currentUser.role === "cashier") ? currentUser.branch : null;
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState({
+    ...emptyShift,
+    branch: lockedBranch || (meta.branches[0] || ""),
+    shiftLabel: meta.shifts[0] || "",
+    date: todayStr(),
+    cashierName: currentUser.role === "cashier" ? currentUser.name : "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [recent, setRecent] = useState([]);
+
+  useEffect(() => {
+    const unsub = SHIFTS_COL.orderBy("createdAt", "desc").limit(30).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      if (currentUser.role === "cashier") data = data.filter((r) => r.cashierName === currentUser.name);
+      if (lockedBranch) data = data.filter((r) => r.branch === lockedBranch);
+      setRecent(data.slice(0, 8));
+    });
+    return unsub;
+  }, [currentUser, lockedBranch]);
+
+  const calc = useMemo(() => computeShift(form), [form]);
+  function set(key, val) { setForm((f) => ({ ...f, [key]: val })); }
+
+  const cashierOptions = useMemo(() => {
+    return users.filter((u) => u.role === "cashier" && (!form.branch || u.branch === form.branch));
+  }, [users, form.branch]);
+
+  function canEditRow(r) {
+    if (currentUser.role === "admin" || currentUser.role === "accountant") return true;
+    if (currentUser.role === "branch_manager") return r.branch === currentUser.branch;
+    if (currentUser.role === "cashier") return r.cashierName === currentUser.name && r.date === todayStr();
+    return false;
+  }
+
+  function loadForEdit(r) {
+    setEditId(r.id);
+    setForm({ ...emptyShift, ...r });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function cancelEdit() {
+    setEditId(null);
+    setForm({ ...emptyShift, branch: lockedBranch || (meta.branches[0] || ""), shiftLabel: meta.shifts[0] || "", date: todayStr(), cashierName: currentUser.role === "cashier" ? currentUser.name : "" });
+  }
+
+  async function save() {
+    if (!form.branch || !form.shiftLabel || !form.date) { setMsg("من فضلك حدد الفرع والوردية والتاريخ"); return; }
+    if (!form.cashierName) { setMsg("من فضلك حدد اسم الكاشير"); return; }
+    setSaving(true); setMsg("");
+    try {
+      const payload = { ...form, ...calc, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+      if (editId) {
+        await SHIFTS_COL.doc(editId).update(payload);
+        setMsg("✅ تم تعديل الوردية بنجاح");
+      } else {
+        await SHIFTS_COL.add({
+          ...payload, enteredBy: currentUser.name, enteredByRole: currentUser.role,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        setMsg("✅ تم حفظ الوردية بنجاح");
+      }
+      cancelEdit();
+    } catch (e) { setMsg("حدث خطأ أثناء الحفظ: " + e.message); }
+    setSaving(false);
+  }
+
+  async function removeShift(r) {
+    if (!confirm("هل تريد حذف هذه الوردية؟")) return;
+    await SHIFTS_COL.doc(r.id).delete();
+  }
+
+  const branches = lockedBranch ? [lockedBranch] : meta.branches;
+
+  return (
+    <div>
+      <div style={cardStyle} className="no-print">
+        <div style={cardTitle}>{editId ? "✏️ تعديل وردية" : "📝 وردية جديدة"}</div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
+          <div style={{ flex: "1 1 160px" }}>
+            <label style={smallLabel}>الفرع</label>
+            <select value={form.branch} onChange={(e) => set("branch", e.target.value)} disabled={!!lockedBranch} style={inputStyle2}>
+              {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: "1 1 160px" }}>
+            <label style={smallLabel}>الوردية</label>
+            <select value={form.shiftLabel} onChange={(e) => set("shiftLabel", e.target.value)} style={inputStyle2}>
+              {meta.shifts.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: "1 1 160px" }}>
+            <label style={smallLabel}>التاريخ</label>
+            <input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} style={inputStyle2} />
+          </div>
+          <div style={{ flex: "1 1 160px" }}>
+            <label style={smallLabel}>رقم السند</label>
+            <input value={form.receiptNo} onChange={(e) => set("receiptNo", e.target.value)} style={inputStyle2} />
+          </div>
+          <div style={{ flex: "1 1 200px" }}>
+            <label style={smallLabel}>اسم الكاشير</label>
+            {currentUser.role === "cashier" ? (
+              <input value={form.cashierName} disabled style={inputStyle2} />
+            ) : (
+              <select value={form.cashierName} onChange={(e) => set("cashierName", e.target.value)} style={inputStyle2}>
+                <option value="">اختر كاشير</option>
+                {cashierOptions.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                {form.cashierName && !cashierOptions.some((c) => c.name === form.cashierName) && (
+                  <option value={form.cashierName}>{form.cashierName} (يدوي)</option>
+                )}
+              </select>
+            )}
+          </div>
+        </div>
+
+        {FIELD_GROUPS.map((grp) => (
+          <div key={grp.title} style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 13.5, color: C.navy, marginBottom: 8, borderBottom: "1px solid " + C.border, paddingBottom: 5 }}>{grp.title}</div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              {grp.fields.map((f) => (
+                <div key={f.key} style={{ flex: f.full ? "1 1 100%" : "1 1 150px" }}>
+                  <label style={smallLabel}>{f.label}</label>
+                  <input type={f.type} step={f.type === "number" ? "0.01" : undefined} value={form[f.key]} onChange={(e) => set(f.key, e.target.value)} style={inputStyle2} />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button onClick={save} disabled={saving} style={{ ...smallBtn, padding: "11px 26px", fontSize: 15 }}>
+            {saving ? "جارِ الحفظ..." : editId ? "💾 حفظ التعديل" : "💾 حفظ الوردية"}
+          </button>
+          {editId && <button onClick={cancelEdit} style={ghostBtn}>إلغاء</button>}
+        </div>
+        {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+      </div>
+
+      <div style={cardStyle} className="no-print">
+        <div style={cardTitle}>📐 ملخّص الحساب التلقائي</div>
+        <SummaryGrid calc={calc} />
+      </div>
+
+      <div style={cardStyle} className="no-print">
+        <div style={cardTitle}>🕒 آخر الورديات المُدخلة</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={tblStyle}>
+            <thead><tr>
+              <th style={th}>التاريخ</th><th style={th}>الفرع</th><th style={th}>الوردية</th>
+              <th style={th}>الكاشير</th><th style={th}>الإجمالي التحصيل</th><th style={th}>العجز الإجمالي</th><th style={th}></th>
+            </tr></thead>
+            <tbody>
+              {recent.map((r) => (
+                <tr key={r.id}>
+                  <td style={td}>{r.date}</td>
+                  <td style={td}>{r.branch}</td>
+                  <td style={td}>{r.shiftLabel}</td>
+                  <td style={td}>{r.cashierName}</td>
+                  <td style={td}>{fmt(r.totalCollection)}</td>
+                  <td style={{ ...td, color: r.totalShortage < 0 ? C.danger : C.success, fontWeight: 700 }}>{fmt(r.totalShortage)}</td>
+                  <td style={td}>
+                    {canEditRow(r) && (
+                      <>
+                        <span onClick={() => loadForEdit(r)} style={{ cursor: "pointer", color: C.blue, marginLeft: 10 }}>تعديل</span>
+                        <span onClick={() => removeShift(r)} style={{ cursor: "pointer", color: C.danger }}>حذف</span>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {recent.length === 0 && <tr><td colSpan={7} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد ورديات مسجلة بعد</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryGrid({ calc }) {
+  const items = [
+    { label: "المبلغ الحقيقي (كاش)", val: calc.realAmount },
+    { label: "المبلغ بعد الاسترجاع (فودكس)", val: calc.afterRefund },
+    { label: "العجز/الزيادة الفعلي (كاش)", val: calc.actualShortage, highlight: true },
+    { label: "إجمالي الموازنة (شبكة)", val: calc.balanceTotal },
+    { label: "الفرق (شبكة مقابل فودكس)", val: calc.networkDiff, highlight: true },
+    { label: "الإجمالي التحصيل", val: calc.totalCollection },
+    { label: "الإجمالي مبيعات فودكس", val: calc.totalFoodicsSales },
+    { label: "العجز الإجمالي", val: calc.totalShortage, highlight: true, big: true },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+      {items.map((it) => (
+        <div key={it.label} style={{
+          flex: "1 1 180px", background: it.big ? "linear-gradient(135deg,#0f2557,#1d4ed8)" : C.blueSoft,
+          border: "1px solid " + (it.big ? "transparent" : C.border), borderRadius: 10, padding: "11px 13px"
+        }}>
+          <div style={{ fontSize: 12, color: it.big ? "#dbe6ff" : C.muted, marginBottom: 4 }}>{it.label}</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: it.big ? "#fff" : (it.highlight ? (it.val < 0 ? C.danger : C.success) : C.navy) }}>{fmt(it.val)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============ تبويب التقارير ============ */
+function dateInRange(d, from, to) { return d >= from && d <= to; }
+
+function presetRange(kind) {
+  const now = new Date();
+  if (kind === "thisMonth") {
+    const from = new Date(now.getFullYear(), now.getMonth(), 1);
+    const to = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  }
+  if (kind === "lastMonth") {
+    const from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const to = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  }
+  if (kind === "last7") {
+    const to = new Date();
+    const from = new Date(); from.setDate(from.getDate() - 6);
+    return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  }
+  return { from: firstDayOfMonth(), to: todayStr() };
+}
+
+function ReportTab({ currentUser, meta, users }) {
+  const isCashier = currentUser.role === "cashier";
+  const lockedBranch = currentUser.role === "branch_manager" ? currentUser.branch : (isCashier ? currentUser.branch : null);
+  const canSeeAllBranches = currentUser.role === "admin" || currentUser.role === "accountant";
+
+  const [mode, setMode] = useState(isCashier ? "cashier" : "branch"); // "branch" | "cashier"
+  const [branch, setBranch] = useState(lockedBranch || "الكل");
+  const [cashierFilter, setCashierFilter] = useState(isCashier ? currentUser.name : "الكل");
+  const initRange = presetRange("thisMonth");
+  const [fromDate, setFromDate] = useState(initRange.from);
+  const [toDate, setToDate] = useState(initRange.to);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    let q = SHIFTS_COL;
+    if (lockedBranch) q = q.where("branch", "==", lockedBranch);
+    const unsub = q.onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((r) => r.date && dateInRange(r.date, fromDate, toDate));
+      if (!lockedBranch && branch !== "الكل") data = data.filter((r) => r.branch === branch);
+      if (mode === "cashier" && cashierFilter !== "الكل") data = data.filter((r) => r.cashierName === cashierFilter);
+      if (isCashier) data = data.filter((r) => r.cashierName === currentUser.name);
+      data.sort((a, b) => (a.date + a.shiftLabel).localeCompare(b.date + b.shiftLabel));
+      setRows(data);
+      setLoading(false);
+    });
+    return unsub;
+  }, [branch, fromDate, toDate, lockedBranch, mode, cashierFilter, isCashier]);
+
+  const totals = useMemo(() => {
+    const t = { collection: 0, totalCollection: 0, totalFoodicsSales: 0, totalShortage: 0, actualShortage: 0 };
+    rows.forEach((r) => {
+      t.collection += Number(r.collection) || 0;
+      t.totalCollection += Number(r.totalCollection) || 0;
+      t.totalFoodicsSales += Number(r.totalFoodicsSales) || 0;
+      t.totalShortage += Number(r.totalShortage) || 0;
+      t.actualShortage += Number(r.actualShortage) || 0;
+    });
+    return t;
+  }, [rows]);
+
+  const byCashier = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => {
+      const k = r.cashierName || "—";
+      if (!map[k]) map[k] = { name: k, count: 0, totalShortage: 0, totalCollection: 0 };
+      map[k].count += 1;
+      map[k].totalShortage += Number(r.totalShortage) || 0;
+      map[k].totalCollection += Number(r.totalCollection) || 0;
+    });
+    return Object.values(map).sort((a, b) => a.totalShortage - b.totalShortage);
+  }, [rows]);
+
+  const byBranch = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => {
+      const k = r.branch || "—";
+      if (!map[k]) map[k] = { name: k, count: 0, totalShortage: 0, totalCollection: 0 };
+      map[k].count += 1;
+      map[k].totalShortage += Number(r.totalShortage) || 0;
+      map[k].totalCollection += Number(r.totalCollection) || 0;
+    });
+    return Object.values(map).sort((a, b) => b.totalCollection - a.totalCollection);
+  }, [rows]);
+
+  const branchOptions = ["الكل", ...meta.branches];
+  const allCashierNames = useMemo(() => {
+    const fromUsers = users.filter((u) => u.role === "cashier" && (!lockedBranch || u.branch === lockedBranch)).map((u) => u.name);
+    return ["الكل", ...Array.from(new Set(fromUsers))];
+  }, [users, lockedBranch]);
+
+  function doPrint() { window.print(); }
+
+  const periodLabel = fromDate === toDate ? fromDate : (fromDate + "  →  " + toDate);
+  const scopeLabel = mode === "cashier" && cashierFilter !== "الكل" ? "الكاشير: " + cashierFilter
+    : (branch !== "الكل" ? "الفرع: " + branch : "كل الفروع");
+
+  return (
+    <div>
+      <div style={cardStyle} className="no-print">
+        <div style={cardTitle}>🔍 خيارات التقرير</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          {!isCashier && (
+            <button onClick={() => setMode("branch")} style={mode === "branch" ? smallBtn : ghostBtn}>تقرير حسب الفرع</button>
+          )}
+          {!isCashier && (
+            <button onClick={() => setMode("cashier")} style={mode === "cashier" ? smallBtn : ghostBtn}>تقرير حسب الكاشير</button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+          {mode === "branch" && !lockedBranch && (
+            <div>
+              <label style={smallLabel}>الفرع</label>
+              <select value={branch} onChange={(e) => setBranch(e.target.value)} style={inputStyle2}>
+                {branchOptions.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </div>
+          )}
+          {mode === "cashier" && !isCashier && (
+            <div>
+              <label style={smallLabel}>الكاشير</label>
+              <select value={cashierFilter} onChange={(e) => setCashierFilter(e.target.value)} style={inputStyle2}>
+                {allCashierNames.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          )}
+          <div>
+            <label style={smallLabel}>من تاريخ</label>
+            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={inputStyle2} />
+          </div>
+          <div>
+            <label style={smallLabel}>إلى تاريخ</label>
+            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={inputStyle2} />
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["thisMonth", "الشهر الحالي"], ["lastMonth", "الشهر الماضي"], ["last7", "آخر 7 أيام"]].map(([k, l]) => (
+              <button key={k} onClick={() => { const r = presetRange(k); setFromDate(r.from); setToDate(r.to); }} style={ghostBtn}>{l}</button>
+            ))}
+          </div>
+          <div style={{ marginRight: "auto", display: "flex", gap: 8 }}>
+            <button onClick={doPrint} style={smallBtn}>🖨️ طباعة / حفظ PDF</button>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 10 }}>
+          ملحوظة: زر الطباعة يفتح نافذة طباعة المتصفح بتنسيق مرتب للتقرير — اختر "حفظ كـ PDF" كوجهة الطباعة للحصول على ملف PDF جاهز للمشاركة بخط عربي سليم.
+        </div>
+      </div>
+
+      <div className="print-area">
+        <div className="print-only-header">
+          <h2>مؤسسة ديرة فارس للتجارة</h2>
+          <div>تقرير تسوية الورديات النقدية</div>
+          <div>{scopeLabel} — الفترة: {periodLabel}</div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={cardTitle}>📌 ملخّص الفترة — {scopeLabel} ({periodLabel})</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {[
+              { label: "عدد الورديات", val: rows.length, plain: true },
+              { label: "إجمالي التحصيل النقدي", val: totals.collection },
+              { label: "إجمالي التحصيل الكلي", val: totals.totalCollection },
+              { label: "إجمالي مبيعات فودكس", val: totals.totalFoodicsSales },
+              { label: "إجمالي العجز/الزيادة الكاش", val: totals.actualShortage, highlight: true },
+              { label: "إجمالي العجز/الزيادة الكلي", val: totals.totalShortage, highlight: true, big: true },
+            ].map((it) => (
+              <div key={it.label} style={{
+                flex: "1 1 170px", background: it.big ? "linear-gradient(135deg,#0f2557,#1d4ed8)" : C.blueSoft,
+                border: "1px solid " + (it.big ? "transparent" : C.border), borderRadius: 10, padding: "11px 13px"
+              }}>
+                <div style={{ fontSize: 12, color: it.big ? "#dbe6ff" : C.muted, marginBottom: 4 }}>{it.label}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: it.big ? "#fff" : (it.highlight ? (it.val < 0 ? C.danger : C.success) : C.navy) }}>
+                  {it.plain ? it.val : fmt(it.val)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {mode === "branch" && (
+          <div style={cardStyle}>
+            <div style={cardTitle}>👤 العجز/الزيادة حسب الكاشير</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={tblStyle}>
+                <thead><tr><th style={th}>الكاشير</th><th style={th}>عدد الورديات</th><th style={th}>إجمالي التحصيل</th><th style={th}>إجمالي العجز/الزيادة</th></tr></thead>
+                <tbody>
+                  {byCashier.map((c) => (
+                    <tr key={c.name}>
+                      <td style={td}>{c.name}</td><td style={td}>{c.count}</td><td style={td}>{fmt(c.totalCollection)}</td>
+                      <td style={{ ...td, color: c.totalShortage < 0 ? C.danger : C.success, fontWeight: 700 }}>{fmt(c.totalShortage)}</td>
+                    </tr>
+                  ))}
+                  {byCashier.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا بيانات</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {mode === "cashier" && cashierFilter === "الكل" && canSeeAllBranches && (
+          <div style={cardStyle}>
+            <div style={cardTitle}>🏬 مقارنة الفروع</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={tblStyle}>
+                <thead><tr><th style={th}>الفرع</th><th style={th}>عدد الورديات</th><th style={th}>إجمالي التحصيل</th><th style={th}>إجمالي العجز/الزيادة</th></tr></thead>
+                <tbody>
+                  {byBranch.map((b) => (
+                    <tr key={b.name}>
+                      <td style={td}>{b.name}</td><td style={td}>{b.count}</td><td style={td}>{fmt(b.totalCollection)}</td>
+                      <td style={{ ...td, color: b.totalShortage < 0 ? C.danger : C.success, fontWeight: 700 }}>{fmt(b.totalShortage)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        <div style={cardStyle}>
+          <div style={cardTitle}>📋 تفاصيل الورديات</div>
+          {loading ? <div style={{ color: "#9ca3af" }}>جارِ التحميل...</div> : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={tblStyle}>
+                <thead>
+                  <tr>
+                    <th style={th}>التاريخ</th><th style={th}>الفرع</th><th style={th}>الوردية</th><th style={th}>الكاشير</th>
+                    <th style={th}>تحصيل</th><th style={th}>فودكس كاش</th><th style={th}>عجز كاش</th>
+                    <th style={th}>شبكة فعلي</th><th style={th}>مدى فودكس</th><th style={th}>فرق الشبكة</th>
+                    <th style={th}>إجمالي تحصيل</th><th style={th}>إجمالي فودكس</th><th style={th}>العجز الإجمالي</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.id}>
+                      <td style={td}>{r.date}</td><td style={td}>{r.branch}</td><td style={td}>{r.shiftLabel}</td><td style={td}>{r.cashierName}</td>
+                      <td style={td}>{fmt(r.collection)}</td><td style={td}>{fmt(r.foodicsCash)}</td>
+                      <td style={{ ...td, color: r.actualShortage < 0 ? C.danger : C.success }}>{fmt(r.actualShortage)}</td>
+                      <td style={td}>{fmt(r.balanceTotal)}</td><td style={td}>{fmt(r.madaFoodics)}</td>
+                      <td style={{ ...td, color: r.networkDiff < 0 ? C.danger : C.success }}>{fmt(r.networkDiff)}</td>
+                      <td style={td}>{fmt(r.totalCollection)}</td><td style={td}>{fmt(r.totalFoodicsSales)}</td>
+                      <td style={{ ...td, color: r.totalShortage < 0 ? C.danger : C.success, fontWeight: 700 }}>{fmt(r.totalShortage)}</td>
+                    </tr>
+                  ))}
+                  {rows.length === 0 && <tr><td colSpan={13} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد ورديات في هذه الفترة</td></tr>}
+                </tbody>
+                {rows.length > 0 && (
+                  <tfoot>
+                    <tr style={{ background: C.blueSoft, fontWeight: 800 }}>
+                      <td style={td} colSpan={4}>الإجمالي</td>
+                      <td style={td}>{fmt(totals.collection)}</td><td style={td}>-</td><td style={td}>{fmt(totals.actualShortage)}</td>
+                      <td style={td} colSpan={3}>-</td>
+                      <td style={td}>{fmt(totals.totalCollection)}</td><td style={td}>{fmt(totals.totalFoodicsSales)}</td><td style={td}>{fmt(totals.totalShortage)}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============ تبويب الإعدادات ============ */
+function SettingsTab({ meta, users }) {
+  return (
+    <div>
+      <BranchesSettings meta={meta} />
+      <ShiftsSettings meta={meta} />
+      <UsersSettings users={users} meta={meta} />
+    </div>
+  );
+}
+
+function BranchesSettings({ meta }) {
+  const [bulkText, setBulkText] = useState("");
+  const [msg, setMsg] = useState("");
+
+  async function addBulk() {
+    const names = Array.from(new Set(
+      bulkText.split("\n").map((s) => s.trim()).filter(Boolean)
+    )).filter((n) => !meta.branches.includes(n));
+    if (names.length === 0) { setMsg("لا يوجد أسماء جديدة لإضافتها"); return; }
+    await META_DOC.update({ branches: firebase.firestore.FieldValue.arrayUnion(...names) });
+    setBulkText("");
+    setMsg("✅ تمت إضافة " + names.length + " فرع");
+  }
+  async function removeBranch(name) {
+    if (!confirm(`هل تريد حذف فرع "${name}"؟`)) return;
+    await META_DOC.update({ branches: firebase.firestore.FieldValue.arrayRemove(name) });
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>🏬 إدارة الفروع</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {meta.branches.map((b) => (
+          <div key={b} style={{ background: C.blueSoft, borderRadius: 20, padding: "6px 12px", fontSize: 13.5, display: "flex", alignItems: "center", gap: 8, color: C.navy, fontWeight: 600 }}>
+            {b}<span onClick={() => removeBranch(b)} style={{ cursor: "pointer", color: C.danger, fontWeight: 800 }}>×</span>
+          </div>
+        ))}
+        {meta.branches.length === 0 && <div style={{ color: "#9ca3af", fontSize: 13 }}>لا يوجد فروع بعد</div>}
+      </div>
+      <label style={smallLabel}>إضافة فروع جماعيًا (اكتب اسم فرع في كل سطر)</label>
+      <textarea value={bulkText} onChange={(e) => setBulkText(e.target.value)} rows={4}
+        placeholder={"أملج\nالرايس\nينبع الصناعية"} style={{ ...inputStyle2, resize: "vertical", marginBottom: 10 }} />
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button onClick={addBulk} style={smallBtn}>➕ إضافة كل الفروع</button>
+        {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ShiftsSettings({ meta }) {
+  const [bulkText, setBulkText] = useState("");
+  const [msg, setMsg] = useState("");
+
+  async function addBulk() {
+    const names = Array.from(new Set(
+      bulkText.split("\n").map((s) => s.trim()).filter(Boolean)
+    )).filter((n) => !meta.shifts.includes(n));
+    if (names.length === 0) { setMsg("لا يوجد ورديات جديدة لإضافتها"); return; }
+    await META_DOC.update({ shifts: firebase.firestore.FieldValue.arrayUnion(...names) });
+    setBulkText("");
+    setMsg("✅ تمت إضافة " + names.length + " وردية");
+  }
+  async function removeShift(name) {
+    if (!confirm(`هل تريد حذف وردية "${name}"؟`)) return;
+    await META_DOC.update({ shifts: firebase.firestore.FieldValue.arrayRemove(name) });
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>🕒 إدارة الورديات</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {meta.shifts.map((s) => (
+          <div key={s} style={{ background: C.blueSoft, borderRadius: 20, padding: "6px 12px", fontSize: 13.5, display: "flex", alignItems: "center", gap: 8, color: C.navy, fontWeight: 600 }}>
+            {s}<span onClick={() => removeShift(s)} style={{ cursor: "pointer", color: C.danger, fontWeight: 800 }}>×</span>
+          </div>
+        ))}
+      </div>
+      <label style={smallLabel}>إضافة ورديات جماعيًا (وردية في كل سطر)</label>
+      <textarea value={bulkText} onChange={(e) => setBulkText(e.target.value)} rows={3}
+        placeholder={"12am-4am\n4am-4pm\n4pm-11pm"} style={{ ...inputStyle2, resize: "vertical", marginBottom: 10 }} />
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button onClick={addBulk} style={smallBtn}>➕ إضافة كل الورديات</button>
+        {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+const emptyUser = { username: "", password: "", name: "", role: "cashier", branch: "" };
+const emptyBulkRow = () => ({ _rid: uid(), username: "", password: "", name: "", role: "cashier", branch: "" });
+
+function UsersSettings({ users, meta }) {
+  /* -------- إضافة جماعية سريعة -------- */
+  const [bulkRows, setBulkRows] = useState([emptyBulkRow(), emptyBulkRow(), emptyBulkRow()]);
+  const [bulkMsg, setBulkMsg] = useState("");
+
+  function setBulkField(rid, key, val) {
+    setBulkRows((rows) => rows.map((r) => (r._rid === rid ? { ...r, [key]: val } : r)));
+  }
+  function addBulkRow() { setBulkRows((rows) => [...rows, emptyBulkRow()]); }
+  function removeBulkRow(rid) { setBulkRows((rows) => rows.filter((r) => r._rid !== rid)); }
+
+  async function saveBulk() {
+    const valid = bulkRows.filter((r) => r.username.trim() && r.password.trim() && r.name.trim());
+    if (valid.length === 0) { setBulkMsg("من فضلك أدخل بيانات مستخدم واحد على الأقل (اسم مستخدم + كلمة مرور + اسم)"); return; }
+    const existingUsernames = new Set(users.map((u) => u.username));
+    const seenNow = new Set();
+    const toAdd = [];
+    for (const r of valid) {
+      const uname = r.username.trim();
+      if (existingUsernames.has(uname) || seenNow.has(uname)) continue;
+      seenNow.add(uname);
+      toAdd.push({ id: uid(), username: uname, password: r.password.trim(), name: r.name.trim(), role: r.role, branch: (r.role === "branch_manager" || r.role === "cashier") ? r.branch : "" });
+    }
+    if (toAdd.length === 0) { setBulkMsg("كل أسماء المستخدمين المدخلة موجودة بالفعل"); return; }
+    await USERS_DOC.set({ list: [...users, ...toAdd] });
+    setBulkRows([emptyBulkRow(), emptyBulkRow(), emptyBulkRow()]);
+    setBulkMsg("✅ تمت إضافة " + toAdd.length + " مستخدم بنجاح");
+  }
+
+  /* -------- تعديل مستخدم موجود -------- */
+  const [form, setForm] = useState(emptyUser);
+  const [editingId, setEditingId] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+
+  async function saveUser() {
+    if (!form.username.trim() || !form.password.trim() || !form.name.trim()) { setMsg("من فضلك أكمل اسم المستخدم وكلمة المرور والاسم"); return; }
+    const list = users.slice();
+    if (editingId) {
+      const idx = list.findIndex((u) => u.id === editingId);
+      if (idx > -1) list[idx] = { ...list[idx], ...form };
+    } else {
+      if (list.some((u) => u.username === form.username.trim())) { setMsg("اسم المستخدم موجود بالفعل"); return; }
+      list.push({ id: uid(), ...form });
+    }
+    await USERS_DOC.set({ list });
+    setForm(emptyUser); setEditingId(null); setMsg("");
+  }
+  function editUser(u) {
+    setForm({ username: u.username, password: u.password, name: u.name, role: u.role, branch: u.branch || "" });
+    setEditingId(u.id);
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  }
+  async function removeUser(id) {
+    if (!confirm("هل تريد حذف هذا المستخدم؟")) return;
+    await USERS_DOC.set({ list: users.filter((u) => u.id !== id) });
+  }
+
+  const needsBranch = form.role === "branch_manager" || form.role === "cashier";
+
+  return (
+    <div>
+      <div style={cardStyle}>
+        <div style={cardTitle}>👥 إضافة مستخدمين جماعيًا</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={tblStyle}>
+            <thead><tr>
+              <th style={th}>اسم المستخدم</th><th style={th}>كلمة المرور</th><th style={th}>الاسم</th>
+              <th style={th}>الصلاحية</th><th style={th}>الفرع</th><th style={th}></th>
+            </tr></thead>
+            <tbody>
+              {bulkRows.map((r) => {
+                const rowNeedsBranch = r.role === "branch_manager" || r.role === "cashier";
+                return (
+                  <tr key={r._rid}>
+                    <td style={td}><input value={r.username} onChange={(e) => setBulkField(r._rid, "username", e.target.value)} style={{ ...inputStyle2, minWidth: 110 }} /></td>
+                    <td style={td}><input value={r.password} onChange={(e) => setBulkField(r._rid, "password", e.target.value)} style={{ ...inputStyle2, minWidth: 100 }} /></td>
+                    <td style={td}><input value={r.name} onChange={(e) => setBulkField(r._rid, "name", e.target.value)} style={{ ...inputStyle2, minWidth: 130 }} /></td>
+                    <td style={td}>
+                      <select value={r.role} onChange={(e) => setBulkField(r._rid, "role", e.target.value)} style={{ ...inputStyle2, minWidth: 110 }}>
+                        <option value="admin">أدمن</option>
+                        <option value="accountant">محاسب</option>
+                        <option value="branch_manager">مدير فرع</option>
+                        <option value="cashier">كاشير</option>
+                      </select>
+                    </td>
+                    <td style={td}>
+                      {rowNeedsBranch ? (
+                        <select value={r.branch} onChange={(e) => setBulkField(r._rid, "branch", e.target.value)} style={{ ...inputStyle2, minWidth: 110 }}>
+                          <option value="">اختر فرع</option>
+                          {meta.branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                      ) : <span style={{ color: "#9ca3af" }}>—</span>}
+                    </td>
+                    <td style={td}><span onClick={() => removeBulkRow(r._rid)} style={{ cursor: "pointer", color: C.danger }}>حذف الصف</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
+          <button onClick={addBulkRow} style={ghostBtn}>+ إضافة صف</button>
+          <button onClick={saveBulk} style={smallBtn}>💾 حفظ كل المستخدمين</button>
+          {bulkMsg && <span style={{ fontSize: 13, color: bulkMsg.startsWith("✅") ? C.success : C.danger }}>{bulkMsg}</span>}
+        </div>
+      </div>
+
+      <div style={cardStyle}>
+        <div style={cardTitle}>{editingId ? "✏️ تعديل مستخدم" : "➕ إضافة مستخدم مفرد"}</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>اسم المستخدم (دخول)</label><input value={form.username} onChange={(e) => set("username", e.target.value)} style={inputStyle2} /></div>
+          <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>كلمة المرور</label><input value={form.password} onChange={(e) => set("password", e.target.value)} style={inputStyle2} /></div>
+          <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>الاسم الظاهر</label><input value={form.name} onChange={(e) => set("name", e.target.value)} style={inputStyle2} /></div>
+          <div style={{ flex: "1 1 150px" }}>
+            <label style={smallLabel}>الصلاحية</label>
+            <select value={form.role} onChange={(e) => set("role", e.target.value)} style={inputStyle2}>
+              <option value="admin">أدمن</option><option value="accountant">محاسب</option>
+              <option value="branch_manager">مدير فرع</option><option value="cashier">كاشير</option>
+            </select>
+          </div>
+          {needsBranch && (
+            <div style={{ flex: "1 1 150px" }}>
+              <label style={smallLabel}>الفرع</label>
+              <select value={form.branch} onChange={(e) => set("branch", e.target.value)} style={inputStyle2}>
+                <option value="">اختر فرع</option>
+                {meta.branches.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={saveUser} style={smallBtn}>{editingId ? "حفظ التعديل" : "إضافة مستخدم"}</button>
+          {editingId && <button onClick={() => { setForm(emptyUser); setEditingId(null); }} style={ghostBtn}>إلغاء</button>}
+          {msg && <span style={{ color: C.danger, fontSize: 13 }}>{msg}</span>}
+        </div>
+      </div>
+
+      <div style={cardStyle}>
+        <div style={cardTitle}>📋 كل المستخدمين ({users.length})</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={tblStyle}>
+            <thead><tr><th style={th}>اسم المستخدم</th><th style={th}>الاسم</th><th style={th}>الصلاحية</th><th style={th}>الفرع</th><th style={th}></th></tr></thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id}>
+                  <td style={td}>{u.username}</td><td style={td}>{u.name}</td>
+                  <td style={td}>{ROLE_LABELS[u.role]}</td><td style={td}>{u.branch || "—"}</td>
+                  <td style={td}>
+                    <span onClick={() => editUser(u)} style={{ cursor: "pointer", color: C.blue, marginLeft: 10 }}>تعديل</span>
+                    <span onClick={() => removeUser(u.id)} style={{ cursor: "pointer", color: C.danger }}>حذف</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
