@@ -23,7 +23,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -81,7 +80,6 @@
   };
   firebase.initializeApp(firebaseConfig);
   window.__db = firebase.firestore();
-  window.__storage = firebase.storage();
 
   // تسجيل Service Worker لتفعيل التثبيت كتطبيق (PWA)
   if ("serviceWorker" in navigator) {
@@ -94,7 +92,6 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
 const db = window.__db;
-const storage = window.__storage;
 
 /* ============ مراجع Firestore (نظام متعدد المؤسسات) ============
    collection "institutions": مستند لكل مؤسسة { id, name, createdAt }
@@ -239,23 +236,50 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     return Math.max(0, (Number(c.amount) || 0) - settled);
   }
 
+  /* ضغط الصورة داخل المتصفح وتحويلها لنص Base64 قابل للتخزين مباشرة في Firestore (بدون أي خدمة تخزين خارجية) */
+  function compressImage(file, maxDim, quality) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > height) { if (width > maxDim) { height = Math.round(height * (maxDim / width)); width = maxDim; } }
+          else { if (height > maxDim) { width = Math.round(width * (maxDim / height)); height = maxDim; } }
+          const canvas = document.createElement("canvas");
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        };
+        img.onerror = () => reject(new Error("تعذرت قراءة الصورة"));
+        img.src = e.target.result;
+      };
+      reader.onerror = () => reject(new Error("تعذرت قراءة الملف"));
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function handleFile(custodyId, file) {
     if (!file) return;
     if (!file.type.startsWith("image/")) { setMsg("من فضلك اختار صورة بس"); return; }
     setUploadingId(custodyId); setMsg("");
     try {
-      const path = "custodyReceipts/" + institutionId + "/" + custodyId + "/" + uid() + "_" + file.name;
-      const ref = storage.ref().child(path);
-      await ref.put(file);
-      const url = await ref.getDownloadURL();
+      let dataUrl = await compressImage(file, 1000, 0.6);
+      if (dataUrl.length > 700000) dataUrl = await compressImage(file, 700, 0.45);
+      if (dataUrl.length > 900000) {
+        setMsg("الصورة كبيرة جدًا حتى بعد الضغط — جرّب تصوّرها من مسافة أبعد شوية أو بإضاءة أوضح");
+        setUploadingId(null);
+        return;
+      }
       await CUSTODIES_COL.doc(custodyId).update({
         receipts: firebase.firestore.FieldValue.arrayUnion({
-          url, path, uploadedAt: Date.now(), uploadedBy: currentUser.name,
+          url: dataUrl, uploadedAt: Date.now(), uploadedBy: currentUser.name,
         }),
       });
       setMsg("✅ تم رفع الفاتورة بنجاح");
     } catch (e) {
-      setMsg("تعذر رفع الصورة: " + e.message + " — تأكد إن Firebase Storage مفعّل في مشروعك");
+      setMsg("تعذر رفع الصورة: " + e.message);
     }
     setUploadingId(null);
   }
