@@ -82,9 +82,12 @@ const db = window.__db;
 */
 const META_DOC = db.collection("cashRecon").doc("meta");
 const USERS_DOC = db.collection("cashRecon").doc("users");
+const COUNTERS_DOC = db.collection("cashRecon").doc("counters");
 const SHIFTS_COL = db.collection("cashReconShifts");
+const NOTIF_COL = db.collection("cashReconNotifications");
 
 const DEFAULT_BRANCHES = ["أملج", "الرايس", "ينبع"];
+const DEFAULT_SHORTAGE_THRESHOLD = 50;
 const DEFAULT_SHIFTS = ["12am-4am", "4am-4pm", "4pm-11pm"];
 
 const ROLE_LABELS = {
@@ -313,6 +316,7 @@ function MainLayout({ currentUser, users, meta, tab, setTab, onLogout }) {
           ))}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+          <NotificationBell currentUser={currentUser} setTab={setTab} />
           <span style={{ background: "rgba(255,255,255,0.12)", padding: "6px 12px", borderRadius: 20 }}>
             {currentUser.name} · {ROLE_LABELS[currentUser.role]}{currentUser.branch ? " · " + currentUser.branch : ""}
           </span>
@@ -328,6 +332,105 @@ function MainLayout({ currentUser, users, meta, tab, setTab, onLogout }) {
         {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={users} />}
         {tab === "settings" && currentUser.role === "admin" && <SettingsTab meta={meta} users={users} />}
       </div>
+    </div>
+  );
+}
+
+/* ============ جرس الإشعارات ============ */
+function NotificationBell({ currentUser, setTab }) {
+  const [open, setOpen] = useState(false);
+  const [notifs, setNotifs] = useState([]);
+  const boxRef = useRef(null);
+
+  const scopeBranch = (currentUser.role === "branch_manager" || currentUser.role === "cashier") ? currentUser.branch : null;
+
+  useEffect(() => {
+    const unsub = NOTIF_COL.orderBy("createdAt", "desc").limit(60).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      if (scopeBranch) data = data.filter((n) => n.branch === scopeBranch);
+      setNotifs(data);
+    });
+    return unsub;
+  }, [scopeBranch]);
+
+  useEffect(() => {
+    function onClickOutside(e) {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  const unread = notifs.filter((n) => !(n.readBy || []).includes(currentUser.id));
+
+  async function markRead(n) {
+    if ((n.readBy || []).includes(currentUser.id)) return;
+    await NOTIF_COL.doc(n.id).update({ readBy: firebase.firestore.FieldValue.arrayUnion(currentUser.id) }).catch(() => {});
+  }
+  async function markAllRead() {
+    await Promise.all(unread.map((n) =>
+      NOTIF_COL.doc(n.id).update({ readBy: firebase.firestore.FieldValue.arrayUnion(currentUser.id) }).catch(() => {})
+    ));
+  }
+  function timeAgo(ts) {
+    if (!ts || !ts.toDate) return "";
+    const diffMs = Date.now() - ts.toDate().getTime();
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return "الآن";
+    if (mins < 60) return "منذ " + mins + " د";
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return "منذ " + hrs + " س";
+    return "منذ " + Math.floor(hrs / 24) + " يوم";
+  }
+
+  return (
+    <div ref={boxRef} style={{ position: "relative" }}>
+      <button onClick={() => setOpen((v) => !v)} style={{
+        background: "rgba(255,255,255,0.14)", border: "none", borderRadius: "50%",
+        width: 36, height: 36, cursor: "pointer", fontSize: 16, position: "relative", color: "#fff"
+      }}>
+        🔔
+        {unread.length > 0 && (
+          <span style={{
+            position: "absolute", top: -3, left: -3, background: C.danger, color: "#fff",
+            borderRadius: "50%", minWidth: 17, height: 17, fontSize: 10, fontWeight: 800,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px"
+          }}>{unread.length > 9 ? "9+" : unread.length}</span>
+        )}
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", left: 0, top: 44, width: 340, maxHeight: 420, overflowY: "auto",
+          background: "#fff", borderRadius: 12, boxShadow: "0 12px 30px rgba(15,37,87,0.25)",
+          border: "1px solid " + C.border, zIndex: 50, color: C.text
+        }}>
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid " + C.border, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontWeight: 800, fontSize: 13.5, color: C.navy }}>🔔 الإشعارات</div>
+            {unread.length > 0 && (
+              <span onClick={markAllRead} style={{ fontSize: 12, color: C.blue, cursor: "pointer", fontWeight: 700 }}>تعليم الكل كمقروء</span>
+            )}
+          </div>
+          {notifs.length === 0 && (
+            <div style={{ padding: 24, textAlign: "center", color: "#9ca3af", fontSize: 13 }}>لا يوجد إشعارات حاليًا</div>
+          )}
+          {notifs.map((n) => {
+            const isUnread = !(n.readBy || []).includes(currentUser.id);
+            return (
+              <div key={n.id} onClick={() => { markRead(n); setTab("report"); setOpen(false); }} style={{
+                padding: "11px 14px", borderBottom: "1px solid #f1f4f9", cursor: "pointer",
+                background: isUnread ? C.blueSoft : "#fff", display: "flex", gap: 8
+              }}>
+                <div style={{ fontSize: 16, marginTop: 1 }}>{n.shortage < 0 ? "🔴" : "🟢"}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: isUnread ? 800 : 600, color: C.text, lineHeight: 1.5 }}>{n.message}</div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{n.date} · {timeAgo(n.createdAt)}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -360,6 +463,44 @@ const emptyShift = {
   mada: "", visa: "", mastercard: "", amex: "", gulfNetwork: "", transfer: "", madaFoodics: "",
 };
 
+/* ============ منطق الإشعارات: عجز/زيادة أعلى من الحد المسموح ============ */
+/* ============ ترقيم السندات التلقائي (تسلسلي لكل فرع) ============ */
+function padReceiptNo(n) {
+  return String(n).padStart(5, "0");
+}
+
+async function getNextReceiptNo(branch) {
+  const next = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(COUNTERS_DOC);
+    const data = snap.exists ? snap.data() : {};
+    const branchCounters = data.branchCounters || {};
+    const current = Number(branchCounters[branch]) || 0;
+    const updated = current + 1;
+    tx.set(COUNTERS_DOC, { branchCounters: { ...branchCounters, [branch]: updated } }, { merge: true });
+    return updated;
+  });
+  return padReceiptNo(next);
+}
+
+async function syncShortageNotification(shiftId, shift, meta) {
+  const threshold = Number(meta.shortageThreshold) || DEFAULT_SHORTAGE_THRESHOLD;
+  const shortage = Number(shift.totalShortage) || 0;
+  const exceeds = Math.abs(shortage) >= threshold;
+  const ref = NOTIF_COL.doc(shiftId);
+  if (exceeds) {
+    const kind = shortage < 0 ? "عجز" : "زيادة";
+    await ref.set({
+      shiftId, branch: shift.branch, date: shift.date, shiftLabel: shift.shiftLabel,
+      cashierName: shift.cashierName, shortage,
+      message: `${kind} بقيمة ${Math.abs(shortage).toFixed(2)} ر.س — ${shift.branch} — وردية ${shift.shiftLabel} — الكاشير ${shift.cashierName}`,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      readBy: [],
+    }, { merge: false });
+  } else {
+    await ref.delete().catch(() => {});
+  }
+}
+
 function EntryTab({ currentUser, meta, users }) {
   const lockedBranch = (currentUser.role === "branch_manager" || currentUser.role === "cashier") ? currentUser.branch : null;
   const [editId, setEditId] = useState(null);
@@ -372,6 +513,8 @@ function EntryTab({ currentUser, meta, users }) {
   });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [manualReceipt, setManualReceipt] = useState(false);
+  const canOverrideReceipt = currentUser.role === "admin" || currentUser.role === "accountant";
   const [recent, setRecent] = useState([]);
 
   useEffect(() => {
@@ -413,17 +556,24 @@ function EntryTab({ currentUser, meta, users }) {
     if (!form.cashierName) { setMsg("من فضلك حدد اسم الكاشير"); return; }
     setSaving(true); setMsg("");
     try {
-      const payload = { ...form, ...calc, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+      let receiptNo = form.receiptNo;
+      if (!editId && !manualReceipt) {
+        receiptNo = await getNextReceiptNo(form.branch);
+      }
+      const payload = { ...form, receiptNo, ...calc, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+      let shiftId = editId;
       if (editId) {
         await SHIFTS_COL.doc(editId).update(payload);
         setMsg("✅ تم تعديل الوردية بنجاح");
       } else {
-        await SHIFTS_COL.add({
+        const ref = await SHIFTS_COL.add({
           ...payload, enteredBy: currentUser.name, enteredByRole: currentUser.role,
           createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
-        setMsg("✅ تم حفظ الوردية بنجاح");
+        shiftId = ref.id;
+        setMsg("✅ تم حفظ الوردية بنجاح — رقم السند: " + receiptNo);
       }
+      await syncShortageNotification(shiftId, payload, meta);
       cancelEdit();
     } catch (e) { setMsg("حدث خطأ أثناء الحفظ: " + e.message); }
     setSaving(false);
@@ -432,6 +582,7 @@ function EntryTab({ currentUser, meta, users }) {
   async function removeShift(r) {
     if (!confirm("هل تريد حذف هذه الوردية؟")) return;
     await SHIFTS_COL.doc(r.id).delete();
+    await NOTIF_COL.doc(r.id).delete().catch(() => {});
   }
 
   const branches = lockedBranch ? [lockedBranch] : meta.branches;
@@ -457,9 +608,20 @@ function EntryTab({ currentUser, meta, users }) {
             <label style={smallLabel}>التاريخ</label>
             <input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} style={inputStyle2} />
           </div>
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={smallLabel}>رقم السند</label>
-            <input value={form.receiptNo} onChange={(e) => set("receiptNo", e.target.value)} style={inputStyle2} />
+          <div style={{ flex: "1 1 200px" }}>
+            <label style={smallLabel}>
+              رقم السند {editId ? "" : "(تلقائي)"}
+              {canOverrideReceipt && !editId && (
+                <span onClick={() => setManualReceipt((v) => !v)} style={{ marginRight: 8, color: C.blue, cursor: "pointer", fontWeight: 700, fontSize: 11.5 }}>
+                  {manualReceipt ? "رجوع للتلقائي" : "إدخال يدوي"}
+                </span>
+              )}
+            </label>
+            {editId || (canOverrideReceipt && manualReceipt) ? (
+              <input value={form.receiptNo} onChange={(e) => set("receiptNo", e.target.value)} style={inputStyle2} placeholder={editId ? "" : "اكتب رقم السند يدويًا"} />
+            ) : (
+              <input value={editId ? form.receiptNo : "سيتولد تلقائيًا عند الحفظ"} disabled style={{ ...inputStyle2, color: C.muted, fontStyle: "italic" }} />
+            )}
           </div>
           <div style={{ flex: "1 1 200px" }}>
             <label style={smallLabel}>اسم الكاشير</label>
@@ -790,6 +952,8 @@ function ReportTab({ currentUser, meta, users }) {
           </div>
         )}
 
+        <DailyCashierMatrix rows={rows} />
+
         <div style={cardStyle}>
           <div style={cardTitle}>📋 تفاصيل الورديات</div>
           {loading ? <div style={{ color: "#9ca3af" }}>جارِ التحميل...</div> : (
@@ -836,13 +1000,191 @@ function ReportTab({ currentUser, meta, users }) {
   );
 }
 
+/* ============ التقرير اليومي: العجز/الزيادة لكل كاشير في كل يوم ============ */
+function DailyCashierMatrix({ rows }) {
+  const { dates, cashiers, matrix, dayTotals, cashierTotals, grandTotal } = useMemo(() => {
+    const dateSet = new Set();
+    const cashierSet = new Set();
+    const map = {}; // map[date][cashier] = { shortage, count }
+
+    rows.forEach((r) => {
+      const d = r.date || "—";
+      const c = r.cashierName || "—";
+      dateSet.add(d);
+      cashierSet.add(c);
+      if (!map[d]) map[d] = {};
+      if (!map[d][c]) map[d][c] = { shortage: 0, count: 0 };
+      map[d][c].shortage += Number(r.totalShortage) || 0;
+      map[d][c].count += 1;
+    });
+
+    const dates = Array.from(dateSet).sort();
+    const cashiers = Array.from(cashierSet).sort();
+
+    const dayTotals = {};
+    const cashierTotals = {};
+    let grandTotal = 0;
+    dates.forEach((d) => { dayTotals[d] = 0; });
+    cashiers.forEach((c) => { cashierTotals[c] = 0; });
+
+    dates.forEach((d) => {
+      cashiers.forEach((c) => {
+        const cell = (map[d] && map[d][c]) ? map[d][c].shortage : 0;
+        dayTotals[d] += cell;
+        cashierTotals[c] += cell;
+        grandTotal += cell;
+      });
+    });
+
+    return { dates, cashiers, matrix: map, dayTotals, cashierTotals, grandTotal };
+  }, [rows]);
+
+  if (dates.length === 0) return null;
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>📅 التقرير اليومي — العجز/الزيادة لكل كاشير</div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+        كل خلية بتوضح صافي العجز (بالأحمر) أو الزيادة (بالأخضر) لهذا الكاشير في هذا اليوم، بمجموع كل الورديات اللي دخلها.
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={tblStyle}>
+          <thead>
+            <tr>
+              <th style={th}>التاريخ</th>
+              {cashiers.map((c) => <th key={c} style={th}>{c}</th>)}
+              <th style={{ ...th, background: "#dbe6ff" }}>إجمالي اليوم</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dates.map((d) => (
+              <tr key={d}>
+                <td style={{ ...td, fontWeight: 700 }}>{d}</td>
+                {cashiers.map((c) => {
+                  const cell = matrix[d] && matrix[d][c];
+                  const val = cell ? cell.shortage : null;
+                  return (
+                    <td key={c} style={{ ...td, color: val == null ? "#c9d2de" : (val < 0 ? C.danger : C.success), fontWeight: val ? 700 : 400 }}>
+                      {val == null ? "—" : fmt(val)}
+                    </td>
+                  );
+                })}
+                <td style={{ ...td, fontWeight: 800, color: dayTotals[d] < 0 ? C.danger : C.success, background: C.blueSoft }}>
+                  {fmt(dayTotals[d])}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr style={{ background: C.blueSoft, fontWeight: 800 }}>
+              <td style={td}>الإجمالي الكلي</td>
+              {cashiers.map((c) => (
+                <td key={c} style={{ ...td, color: cashierTotals[c] < 0 ? C.danger : C.success }}>{fmt(cashierTotals[c])}</td>
+              ))}
+              <td style={{ ...td, color: grandTotal < 0 ? C.danger : C.success }}>{fmt(grandTotal)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ============ تبويب الإعدادات ============ */
 function SettingsTab({ meta, users }) {
   return (
     <div>
+      <ReceiptNumberingSettings meta={meta} />
+      <NotificationSettings meta={meta} />
       <BranchesSettings meta={meta} />
       <ShiftsSettings meta={meta} />
       <UsersSettings users={users} meta={meta} />
+    </div>
+  );
+}
+
+function ReceiptNumberingSettings({ meta }) {
+  const [counters, setCounters] = useState(null);
+  const [edits, setEdits] = useState({});
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const unsub = COUNTERS_DOC.onSnapshot((doc) => {
+      setCounters((doc.exists && doc.data().branchCounters) || {});
+    });
+    return unsub;
+  }, []);
+
+  if (counters === null) return null;
+
+  function setEdit(branch, val) { setEdits((e) => ({ ...e, [branch]: val })); }
+
+  async function saveBranch(branch) {
+    const val = edits[branch];
+    if (val === undefined || val === "") return;
+    const n = Math.max(0, parseInt(val, 10) || 0);
+    await COUNTERS_DOC.set({ branchCounters: { ...counters, [branch]: n } }, { merge: true });
+    setEdit(branch, undefined);
+    setMsg("✅ تم تحديث ترقيم فرع " + branch + " — أول سند جديد هيبقى رقم " + padReceiptNo(n + 1));
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>🧾 ترقيم السندات</div>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
+        كل فرع له ترقيم تسلسلي منفصل يبدأ تلقائيًا من 00001 ويزيد وحدة مع كل وردية جديدة. لو عندك أرقام سابقة من دفاتر سندات ورقية وعايز تكمّل منها، حدد "آخر رقم مستخدم" لكل فرع تحت وهنكمل من بعده.
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={tblStyle}>
+          <thead><tr><th style={th}>الفرع</th><th style={th}>آخر رقم مستخدم</th><th style={th}>الرقم التالي المتوقع</th><th style={th}>تعديل آخر رقم مستخدم</th><th style={th}></th></tr></thead>
+          <tbody>
+            {meta.branches.map((b) => {
+              const current = Number(counters[b]) || 0;
+              return (
+                <tr key={b}>
+                  <td style={td}>{b}</td>
+                  <td style={td}>{padReceiptNo(current)}</td>
+                  <td style={{ ...td, fontWeight: 700, color: C.blue }}>{padReceiptNo(current + 1)}</td>
+                  <td style={td}>
+                    <input type="number" min="0" placeholder={String(current)} value={edits[b] ?? ""} onChange={(e) => setEdit(b, e.target.value)} style={{ ...inputStyle2, width: 110 }} />
+                  </td>
+                  <td style={td}><span onClick={() => saveBranch(b)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>حفظ</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {msg && <div style={{ marginTop: 10, fontSize: 13, color: C.success }}>{msg}</div>}
+    </div>
+  );
+}
+
+function NotificationSettings({ meta }) {
+  const [val, setVal] = useState(meta.shortageThreshold || DEFAULT_SHORTAGE_THRESHOLD);
+  const [msg, setMsg] = useState("");
+
+  async function saveThreshold() {
+    const n = Number(val);
+    if (!n || n <= 0) { setMsg("أدخل رقم أكبر من صفر"); return; }
+    await META_DOC.update({ shortageThreshold: n });
+    setMsg("✅ تم الحفظ — أي وردية عجزها أو زيادتها ≥ " + n + " ر.س هتولّد تنبيه");
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>🔔 إعدادات الإشعارات</div>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
+        حدد الحد الأدنى لمبلغ العجز أو الزيادة (بالريال) اللي لو أي وردية وصلت له، هيظهر تنبيه تلقائي فوق في الجرس 🔔 للأدمن والمحاسب، ومدير الفرع المعني، والكاشير صاحب الوردية.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+        <div>
+          <label style={smallLabel}>الحد الأدنى (ر.س)</label>
+          <input type="number" step="1" value={val} onChange={(e) => setVal(e.target.value)} style={{ ...inputStyle2, width: 140 }} />
+        </div>
+        <button onClick={saveThreshold} style={smallBtn}>حفظ</button>
+      </div>
+      {msg && <div style={{ marginTop: 8, fontSize: 13, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
     </div>
   );
 }
