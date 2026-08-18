@@ -23,6 +23,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -80,6 +81,7 @@
   };
   firebase.initializeApp(firebaseConfig);
   window.__db = firebase.firestore();
+  window.__storage = firebase.storage();
 
   // تسجيل Service Worker لتفعيل التثبيت كتطبيق (PWA)
   if ("serviceWorker" in navigator) {
@@ -92,6 +94,7 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
 const db = window.__db;
+const storage = window.__storage;
 
 /* ============ مراجع Firestore (نظام متعدد المؤسسات) ============
    collection "institutions": مستند لكل مؤسسة { id, name, createdAt }
@@ -107,6 +110,7 @@ const TREASURY_TX_COL = db.collection("cashReconTreasuryTx");
 const CUSTODIES_COL = db.collection("cashReconCustodies");
 const CASH_COUNTS_COL = db.collection("cashReconCashCounts");
 const EMPLOYEES_COL = db.collection("cashReconEmployees");
+const EXPENSE_REQUESTS_COL = db.collection("cashReconExpenseRequests");
 const PAYROLL_COL = db.collection("cashReconPayroll");
 const DENOMINATIONS = [500, 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.25];
 const TX_CATEGORIES = [
@@ -132,6 +136,7 @@ const ROLE_LABELS = {
   accountant: "محاسب",
   branch_manager: "مدير فرع",
   cashier: "كاشير",
+  custody_holder: "أمين عهدة",
 };
 
 /* ============ ألوان الهوية (أزرق / أبيض) ============ */
@@ -211,6 +216,136 @@ const dangerBtn = { background: "#fff", color: C.danger, border: "1px solid #fca
 
 /* ============ تسجيل الدخول ============ */
 /* ============ إدارة المؤسسات (سوبر أدمن فقط) ============ */
+/* ============ شاشة أمين العهدة: عرض عهدته + تصوير فواتير مباشرة من الكاميرا ============ */
+function CustodyHolderTab({ currentUser, institutionName }) {
+  const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
+  const [custodies, setCustodies] = useState(null);
+  const [uploadingId, setUploadingId] = useState(null);
+  const [msg, setMsg] = useState("");
+  const fileInputRefs = useRef({});
+
+  useEffect(() => {
+    const unsub = CUSTODIES_COL.where("employeeName", "==", currentUser.name).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((c) => (c.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      data.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+      setCustodies(data);
+    });
+    return unsub;
+  }, [currentUser.name, institutionId]);
+
+  function remainingOf(c) {
+    const settled = (c.settlements || []).reduce((s, x) => s + (Number(x.cashReturned) || 0) + (Number(x.expensed) || 0), 0);
+    return Math.max(0, (Number(c.amount) || 0) - settled);
+  }
+
+  async function handleFile(custodyId, file) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setMsg("من فضلك اختار صورة بس"); return; }
+    setUploadingId(custodyId); setMsg("");
+    try {
+      const path = "custodyReceipts/" + institutionId + "/" + custodyId + "/" + uid() + "_" + file.name;
+      const ref = storage.ref().child(path);
+      await ref.put(file);
+      const url = await ref.getDownloadURL();
+      await CUSTODIES_COL.doc(custodyId).update({
+        receipts: firebase.firestore.FieldValue.arrayUnion({
+          url, path, uploadedAt: Date.now(), uploadedBy: currentUser.name,
+        }),
+      });
+      setMsg("✅ تم رفع الفاتورة بنجاح");
+    } catch (e) {
+      setMsg("تعذر رفع الصورة: " + e.message + " — تأكد إن Firebase Storage مفعّل في مشروعك");
+    }
+    setUploadingId(null);
+  }
+
+  if (custodies === null) return <div style={{ color: C.muted, padding: 20 }}>جارِ التحميل...</div>;
+
+  const active = custodies.filter((c) => remainingOf(c) > 0);
+  const settled = custodies.filter((c) => remainingOf(c) <= 0);
+
+  return (
+    <div>
+      <div style={cardStyle}>
+        <div style={cardTitle}>🧍 عهدتي — {currentUser.name}</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
+          من هنا تقدر تصوّر فواتير المصروفات اللي صرفتها من عهدتك، وترفعها كإثبات — المحاسب/المدير المالي هيشوفها ويسجّل المبلغ لما يسوّي العهدة معاك.
+        </div>
+      </div>
+
+      {msg && <div style={{ marginBottom: 14, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+
+      {active.length === 0 && (
+        <div style={{ ...cardStyle, textAlign: "center", color: "#9ca3af" }}>مفيش عهدة قائمة عليك دلوقتي</div>
+      )}
+
+      {active.map((c) => {
+        const rem = remainingOf(c);
+        const receipts = c.receipts || [];
+        return (
+          <div key={c.id} style={cardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+              <div>
+                <div style={{ fontWeight: 800, color: C.navy, fontSize: 15 }}>{c.kind === "advance" ? "💸 سلفة" : "🧍 عهدة"} بتاريخ {c.date}</div>
+                <div style={{ fontSize: 12.5, color: C.muted, marginTop: 3 }}>{c.description || "بدون بيان"}</div>
+              </div>
+              <div style={{ textAlign: "left" }}>
+                <div style={{ fontSize: 11.5, color: C.muted }}>المتبقي عليك</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: C.danger }}>{fmt(rem)} ر.س</div>
+              </div>
+            </div>
+
+            <input
+              type="file" accept="image/*" capture="environment"
+              ref={(el) => (fileInputRefs.current[c.id] = el)}
+              style={{ display: "none" }}
+              onChange={(e) => { handleFile(c.id, e.target.files[0]); e.target.value = ""; }}
+            />
+            <button onClick={() => fileInputRefs.current[c.id]?.click()} disabled={uploadingId === c.id} style={{ ...smallBtn, padding: "12px 22px", fontSize: 14.5 }}>
+              {uploadingId === c.id ? "جارِ الرفع..." : "📷 صوّر فاتورة وارفعها"}
+            </button>
+
+            {receipts.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>الفواتير المرفوعة ({receipts.length})</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {receipts.map((r, i) => (
+                    <a key={i} href={r.url} target="_blank" rel="noreferrer" style={{ display: "block" }}>
+                      <img src={r.url} alt="فاتورة" style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, border: "1px solid " + C.border }} />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {settled.length > 0 && (
+        <div style={cardStyle}>
+          <div style={cardTitle}>✅ عهد سابقة مسددة بالكامل</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={tblStyle}>
+              <thead><tr><th style={th}>التاريخ</th><th style={th}>النوع</th><th style={th}>المبلغ</th><th style={th}>البيان</th></tr></thead>
+              <tbody>
+                {settled.map((c) => (
+                  <tr key={c.id}>
+                    <td style={td}>{c.date}</td>
+                    <td style={td}>{c.kind === "advance" ? "سلفة" : "عهدة"}</td>
+                    <td style={td}>{fmt(c.amount)}</td>
+                    <td style={td}>{c.description || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InstitutionsAdmin({ institutions, allUsers }) {
   const [name, setName] = useState("");
   const [msg, setMsg] = useState("");
@@ -339,6 +474,28 @@ function LoginScreen({ users, onLogin }) {
 }
 
 /* ============ التطبيق الرئيسي ============ */
+/* ============ أيقونات SVG احترافية (نمط عالمي بسيط، بدل الإيموجي) ============ */
+const ICON_PATHS = {
+  entry: "M9 2H4a1 1 0 00-1 1v18a1 1 0 001 1h16a1 1 0 001-1V8l-6-6H9z M14 2v6h6 M9 13h6 M9 17h6 M9 9h1",
+  report: "M3 3v18h18 M7 16v-6 M12 16V7 M17 16v-3",
+  send: "M22 2L11 13 M22 2l-7 20-4-9-9-4 20-7z",
+  bank: "M3 21h18 M4 21V9l8-6 8 6v12 M9 21v-6h6v6",
+  settings: "M12 15a3 3 0 100-6 3 3 0 000 6z M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z",
+  building: "M6 22V4a1 1 0 011-1h10a1 1 0 011 1v18 M6 22h12 M9 7h1 M14 7h1 M9 11h1 M14 11h1 M9 15h1 M14 15h1 M10 22v-4h4v4",
+  bell: "M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 01-3.46 0",
+  logout: "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4 M16 17l5-5-5-5 M21 12H9",
+};
+function Icon({ name, size = 17, color = "currentColor", strokeWidth = 2 }) {
+  const d = ICON_PATHS[name];
+  if (!d) return null;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth}
+      strokeLinecap="round" strokeLinejoin="round" style={{ display: "inline-block", verticalAlign: "-3px", flexShrink: 0 }}>
+      <path d={d} />
+    </svg>
+  );
+}
+
 function App() {
   const [users, setUsers] = useState(null);
   const [institutions, setInstitutions] = useState(null);
@@ -350,7 +507,11 @@ function App() {
   useEffect(() => {
     const savedSession = localStorage.getItem("cashRecon-session");
     if (savedSession) {
-      try { setCurrentUser(JSON.parse(savedSession)); } catch (e) {}
+      try {
+        const u = JSON.parse(savedSession);
+        setCurrentUser(u);
+        if (u.role === "custody_holder") setTab("myCustody");
+      } catch (e) {}
     }
   }, []);
 
@@ -415,6 +576,8 @@ function App() {
     const withInst = { ...u, institutionId: u.institutionId || DEFAULT_INSTITUTION_ID };
     setCurrentUser(withInst);
     localStorage.setItem("cashRecon-session", JSON.stringify(withInst));
+    if (u.role === "custody_holder") setTab("myCustody");
+    else setTab("entry");
   }
   function handleLogout() {
     setCurrentUser(null);
@@ -437,12 +600,14 @@ function App() {
 function MainLayout({ currentUser, users, meta, institutions, institutionName, tab, setTab, onLogout }) {
   const institutionUsers = users.filter((u) => (u.institutionId || DEFAULT_INSTITUTION_ID) === (currentUser.institutionId || DEFAULT_INSTITUTION_ID));
   const tabs = [
-    { id: "entry", label: "📝 تسجيل وردية", roles: ["admin", "accountant", "branch_manager", "cashier"] },
-    { id: "report", label: "📊 التقارير", roles: ["admin", "accountant", "branch_manager", "cashier"] },
-    { id: "treasury", label: "🏦 الخزينة", roles: ["admin", "financial_manager"] },
-    { id: "settings", label: "⚙️ الإعدادات", roles: ["admin"] },
+    { id: "entry", icon: "entry", label: "تسجيل وردية", roles: ["admin", "accountant", "branch_manager", "cashier"] },
+    { id: "report", icon: "report", label: "التقارير", roles: ["admin", "accountant", "branch_manager", "cashier"] },
+    { id: "expenseRequest", icon: "send", label: "طلب صرف", roles: ["admin", "financial_manager", "accountant", "branch_manager"] },
+    { id: "treasury", icon: "bank", label: "الخزينة", roles: ["admin", "financial_manager"] },
+    { id: "settings", icon: "settings", label: "الإعدادات", roles: ["admin"] },
+    { id: "myCustody", icon: "bank", label: "عهدتي", roles: ["custody_holder"] },
   ].filter((t) => t.roles.includes(currentUser.role));
-  if (currentUser.isSuperAdmin) tabs.push({ id: "institutions", label: "🏢 إدارة المؤسسات" });
+  if (currentUser.isSuperAdmin) tabs.push({ id: "institutions", icon: "building", label: "إدارة المؤسسات" });
 
   return (
     <div style={{ minHeight: "100vh" }}>
@@ -459,11 +624,11 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
           {tabs.map((t) => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
               padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer",
-              fontSize: 13.5, fontWeight: 700,
+              fontSize: 13.5, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 7,
               background: tab === t.id ? "#fff" : "rgba(255,255,255,0.14)",
               color: tab === t.id ? C.blue : "#fff",
               transition: "0.15s"
-            }}>{t.label}</button>
+            }}><Icon name={t.icon} size={16} />{t.label}</button>
           ))}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
@@ -473,18 +638,25 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
           </span>
           <button onClick={onLogout} style={{
             background: "#fff", color: C.danger, border: "none", borderRadius: 7,
-            padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700
-          }}>خروج</button>
+            padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 700,
+            display: "inline-flex", alignItems: "center", gap: 6
+          }}><Icon name="logout" size={14} />خروج</button>
         </div>
       </div>
 
       <div style={{ padding: 20, maxWidth: 1360, margin: "0 auto" }}>
         {tab === "entry" && <EntryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
+        {tab === "expenseRequest" && (
+          <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} />
+        )}
         {tab === "treasury" && (currentUser.role === "admin" || currentUser.role === "financial_manager") && (
           <TreasuryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />
         )}
         {tab === "settings" && currentUser.role === "admin" && <SettingsTab meta={meta} users={institutionUsers} allUsers={users} currentUser={currentUser} />}
+        {tab === "myCustody" && currentUser.role === "custody_holder" && (
+          <CustodyHolderTab currentUser={currentUser} institutionName={institutionName} />
+        )}
         {tab === "institutions" && currentUser.isSuperAdmin && (
           <InstitutionsAdmin institutions={institutions} allUsers={users} />
         )}
@@ -546,9 +718,10 @@ function NotificationBell({ currentUser, setTab }) {
     <div ref={boxRef} style={{ position: "relative" }}>
       <button onClick={() => setOpen((v) => !v)} style={{
         background: "rgba(255,255,255,0.14)", border: "none", borderRadius: "50%",
-        width: 36, height: 36, cursor: "pointer", fontSize: 16, position: "relative", color: "#fff"
+        width: 36, height: 36, cursor: "pointer", position: "relative", color: "#fff",
+        display: "flex", alignItems: "center", justifyContent: "center"
       }}>
-        🔔
+        <Icon name="bell" size={18} />
         {unread.length > 0 && (
           <span style={{
             position: "absolute", top: -3, left: -3, background: C.danger, color: "#fff",
@@ -565,7 +738,7 @@ function NotificationBell({ currentUser, setTab }) {
           border: "1px solid " + C.border, zIndex: 50, color: C.text
         }}>
           <div style={{ padding: "12px 14px", borderBottom: "1px solid " + C.border, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontWeight: 800, fontSize: 13.5, color: C.navy }}>🔔 الإشعارات</div>
+            <div style={{ fontWeight: 800, fontSize: 13.5, color: C.navy, display: "flex", alignItems: "center", gap: 6 }}><Icon name="bell" size={15} color={C.navy} /> الإشعارات</div>
             {unread.length > 0 && (
               <span onClick={markAllRead} style={{ fontSize: 12, color: C.blue, cursor: "pointer", fontWeight: 700 }}>تعليم الكل كمقروء</span>
             )}
@@ -1571,6 +1744,125 @@ function computeTreasuryBalance(treasury, txs) {
   return bal;
 }
 
+/* ============ طلب صرف (يحتاج موافقة المدير المالي) ============ */
+const REQUEST_STATUS_LABEL = { pending: "قيد المراجعة", approved: "تمت الموافقة والصرف", rejected: "مرفوض" };
+const REQUEST_STATUS_COLOR = { pending: "#d97706", approved: "#15803d", rejected: "#b91c1c" };
+
+function ExpenseRequestTab({ currentUser, institutionName }) {
+  const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
+  const [treasuries, setTreasuries] = useState([]);
+  const [myRequests, setMyRequests] = useState([]);
+  const [treasuryId, setTreasuryId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayStr());
+  const [category, setCategory] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const unsub = TREASURIES_COL.onSnapshot((snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((t) => (t.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setTreasuries(list);
+      if (!treasuryId && list.length) setTreasuryId(currentUser.branch ? (list.find((t) => t.branch === currentUser.branch)?.id || list[0].id) : list[0].id);
+    });
+    return unsub;
+    // eslint-disable-next-line
+  }, [institutionId]);
+
+  useEffect(() => {
+    const unsub = EXPENSE_REQUESTS_COL.orderBy("createdAt", "desc").limit(60).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId && r.requestedById === currentUser.id);
+      setMyRequests(data);
+    });
+    return unsub;
+  }, [institutionId, currentUser.id]);
+
+  async function submitRequest() {
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { setMsg("أدخل مبلغ صحيح أكبر من صفر"); return; }
+    if (!treasuryId) { setMsg("اختر الخزينة"); return; }
+    if (!description.trim()) { setMsg("اكتب سبب/بيان الصرف"); return; }
+    setSaving(true); setMsg("");
+    try {
+      await EXPENSE_REQUESTS_COL.add({
+        treasuryId, amount: amt, date, category: category || "", description: description.trim(),
+        institutionId, status: "pending",
+        requestedById: currentUser.id, requestedBy: currentUser.name, requestedByRole: currentUser.role,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      setAmount(""); setDescription(""); setCategory("");
+      setMsg("✅ تم إرسال طلب الصرف للمدير المالي للمراجعة");
+    } catch (e) { setMsg("خطأ: " + e.message); }
+    setSaving(false);
+  }
+
+  return (
+    <div>
+      <div style={cardStyle}>
+        <div style={cardTitle}>📝 طلب صرف جديد</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+          أي طلب صرف بتقدّمه هنا بيروح للمدير المالي للمراجعة والموافقة، ومش بيتنفذ فعليًا في الخزينة إلا بعد اعتماده.
+        </div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <label style={smallLabel}>الخزينة</label>
+            <select value={treasuryId} onChange={(e) => setTreasuryId(e.target.value)} style={inputStyle2}>
+              {treasuries.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={smallLabel}>المبلغ</label>
+            <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle2, width: 140 }} />
+          </div>
+          <div>
+            <label style={smallLabel}>التاريخ</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle2} />
+          </div>
+          <div>
+            <label style={smallLabel}>الفئة (اختياري)</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} style={inputStyle2}>
+              <option value="">بدون تصنيف</option>
+              {TX_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: "1 1 100%" }}>
+            <label style={smallLabel}>البيان / سبب الصرف</label>
+            <input value={description} onChange={(e) => setDescription(e.target.value)} style={inputStyle2} placeholder="اكتب تفاصيل واضحة عشان تسهّل مراجعة المدير المالي" />
+          </div>
+        </div>
+        <button onClick={submitRequest} disabled={saving} style={{ ...smallBtn, padding: "11px 26px", fontSize: 15 }}>
+          {saving ? "جارِ الإرسال..." : "📤 إرسال طلب الصرف"}
+        </button>
+        {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+      </div>
+
+      <div style={cardStyle}>
+        <div style={cardTitle}>🕒 طلباتي السابقة</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={tblStyle}>
+            <thead><tr><th style={th}>التاريخ</th><th style={th}>الخزينة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>الحالة</th><th style={th}>ملاحظة المدير المالي</th></tr></thead>
+            <tbody>
+              {myRequests.map((r) => (
+                <tr key={r.id}>
+                  <td style={td}>{r.date}</td>
+                  <td style={td}>{treasuries.find((t) => t.id === r.treasuryId)?.name || "—"}</td>
+                  <td style={td}>{r.description}</td>
+                  <td style={td}>{fmt(r.amount)}</td>
+                  <td style={{ ...td, color: REQUEST_STATUS_COLOR[r.status], fontWeight: 700 }}>{REQUEST_STATUS_LABEL[r.status]}</td>
+                  <td style={td}>{r.reviewNote || "—"}</td>
+                </tr>
+              ))}
+              {myRequests.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لسه ما قدّمتش أي طلب صرف</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TreasuryTab({ currentUser, meta, users, institutionName }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
   const [sub, setSub] = useState("overview");
@@ -1652,6 +1944,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
     { id: "count", label: "🧮 جرد الخزينة" },
     { id: "custody", label: "🧍 عهد الموظفين" },
     { id: "vouchers", label: "🧾 طباعة السندات" },
+    { id: "approvals", label: "✅ اعتماد الصرف" },
     { id: "manage", label: "🗂️ إدارة الخزائن" },
   ];
 
@@ -1675,6 +1968,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
       {sub === "count" && <TreasuryCashCount currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
       {sub === "custody" && <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} />}
       {sub === "vouchers" && <TreasuryVouchers currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
+      {sub === "approvals" && <TreasuryApprovals currentUser={currentUser} treasuries={treasuries} institutionId={institutionId} />}
       {sub === "manage" && <TreasuryManage treasuries={treasuries} institutionId={institutionId} />}
     </div>
   );
@@ -2829,6 +3123,18 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                   {settlingId === c.id && (
                     <tr>
                       <td colSpan={9} style={{ background: C.blueSoft, padding: 14 }}>
+                        {(c.receipts || []).length > 0 && (
+                          <div style={{ marginBottom: 14 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>📷 الفواتير اللي رفعها الموظف ({c.receipts.length})</div>
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                              {c.receipts.map((r, i) => (
+                                <a key={i} href={r.url} target="_blank" rel="noreferrer">
+                                  <img src={r.url} alt="فاتورة" style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 8, border: "1px solid " + C.border }} />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
                           <div><label style={smallLabel}>مبلغ مرتجع نقدي</label><input type="number" step="0.01" value={cashReturned} onChange={(e) => setCashReturned(e.target.value)} style={{ ...inputStyle2, width: 140 }} /></div>
                           <div><label style={smallLabel}>مبلغ محوّل لمصروف (بإيصالات)</label><input type="number" step="0.01" value={expensed} onChange={(e) => setExpensed(e.target.value)} style={{ ...inputStyle2, width: 160 }} /></div>
@@ -3346,6 +3652,121 @@ function VoucherPrintView({ voucher, treasuries, onPrint, onClose, institutionNa
   );
 }
 
+/* ============ اعتماد طلبات الصرف (مدير مالي/أدمن) ============ */
+function TreasuryApprovals({ currentUser, treasuries, institutionId }) {
+  const [requests, setRequests] = useState([]);
+  const [filterStatus, setFilterStatus] = useState("pending");
+  const [reviewingId, setReviewingId] = useState(null);
+  const [reviewNote, setReviewNote] = useState("");
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const unsub = EXPENSE_REQUESTS_COL.orderBy("createdAt", "desc").limit(200).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setRequests(data);
+    });
+    return unsub;
+  }, [institutionId]);
+
+  const filtered = requests.filter((r) => filterStatus === "all" || r.status === filterStatus);
+  const pendingCount = requests.filter((r) => r.status === "pending").length;
+
+  async function approve(r) {
+    setBusy(r.id); setMsg("");
+    try {
+      const txRef = await TREASURY_TX_COL.add({
+        treasuryId: r.treasuryId, type: "expense", amount: r.amount, date: r.date,
+        description: r.description + " (طلب صرف #" + r.id.slice(0, 6) + " — مقدَّم من " + r.requestedBy + ")",
+        category: r.category || "", institutionId,
+        enteredBy: currentUser.name, enteredByRole: currentUser.role,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      await EXPENSE_REQUESTS_COL.doc(r.id).update({
+        status: "approved", reviewedBy: currentUser.name, reviewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        reviewNote: reviewNote || "", txId: txRef.id,
+      });
+      setReviewingId(null); setReviewNote("");
+      setMsg("✅ تم اعتماد الطلب وتنفيذ الصرف في الخزينة");
+    } catch (e) { setMsg("خطأ: " + e.message); }
+    setBusy(null);
+  }
+
+  async function reject(r) {
+    if (!reviewNote.trim()) { setMsg("من فضلك اكتب سبب الرفض قبل التأكيد"); return; }
+    setBusy(r.id); setMsg("");
+    try {
+      await EXPENSE_REQUESTS_COL.doc(r.id).update({
+        status: "rejected", reviewedBy: currentUser.name, reviewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        reviewNote: reviewNote,
+      });
+      setReviewingId(null); setReviewNote("");
+      setMsg("تم رفض الطلب");
+    } catch (e) { setMsg("خطأ: " + e.message); }
+    setBusy(null);
+  }
+
+  return (
+    <div>
+      <div style={cardStyle}>
+        <div style={cardTitle}>✅ اعتماد طلبات الصرف {pendingCount > 0 && <span style={{ background: C.danger, color: "#fff", borderRadius: 20, padding: "2px 10px", fontSize: 12 }}>{pendingCount} قيد الانتظار</span>}</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          {[["pending", "قيد المراجعة"], ["approved", "معتمدة"], ["rejected", "مرفوضة"], ["all", "الكل"]].map(([k, l]) => (
+            <button key={k} onClick={() => setFilterStatus(k)} style={filterStatus === k ? smallBtn : ghostBtn}>{l}</button>
+          ))}
+        </div>
+        {msg && <div style={{ fontSize: 13, marginBottom: 12, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+        <div style={{ overflowX: "auto" }}>
+          <table style={tblStyle}>
+            <thead><tr><th style={th}>التاريخ</th><th style={th}>مقدَّم من</th><th style={th}>الخزينة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>الحالة</th><th style={th}></th></tr></thead>
+            <tbody>
+              {filtered.map((r) => (
+                <React.Fragment key={r.id}>
+                  <tr>
+                    <td style={td}>{r.date}</td>
+                    <td style={td}>{r.requestedBy} <span style={{ color: C.muted, fontSize: 11 }}>({ROLE_LABELS[r.requestedByRole]})</span></td>
+                    <td style={td}>{treasuries.find((t) => t.id === r.treasuryId)?.name || "—"}</td>
+                    <td style={td}>{r.description}{r.category ? " — " + r.category : ""}</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{fmt(r.amount)}</td>
+                    <td style={{ ...td, color: REQUEST_STATUS_COLOR[r.status], fontWeight: 700 }}>{REQUEST_STATUS_LABEL[r.status]}</td>
+                    <td style={td}>
+                      {r.status === "pending" && (
+                        <span onClick={() => { setReviewingId(reviewingId === r.id ? null : r.id); setReviewNote(""); setMsg(""); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>
+                          {reviewingId === r.id ? "إغلاق" : "مراجعة"}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                  {reviewingId === r.id && (
+                    <tr>
+                      <td colSpan={7} style={{ background: C.blueSoft, padding: 14 }}>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+                          <div style={{ flex: "1 1 260px" }}>
+                            <label style={smallLabel}>ملاحظة (إلزامية عند الرفض، اختيارية عند الموافقة)</label>
+                            <input value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} style={inputStyle2} />
+                          </div>
+                          <button onClick={() => approve(r)} disabled={busy === r.id} style={{ ...smallBtn, background: C.success }}>
+                            {busy === r.id ? "جارِ التنفيذ..." : "✅ موافقة وتنفيذ الصرف"}
+                          </button>
+                          <button onClick={() => reject(r)} disabled={busy === r.id} style={{ ...ghostBtn, color: C.danger, borderColor: "#fca5a5" }}>
+                            ❌ رفض
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+              {filtered.length === 0 && <tr><td colSpan={7} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد طلبات</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TreasuryManage({ treasuries, institutionId }) {
   const [name, setName] = useState("");
   const [openingBalance, setOpeningBalance] = useState("");
@@ -3753,6 +4174,7 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
                         <option value="accountant">محاسب</option>
                         <option value="branch_manager">مدير فرع</option>
                         <option value="cashier">كاشير</option>
+                        <option value="custody_holder">أمين عهدة</option>
                       </select>
                     </td>
                     <td style={td}>
@@ -3788,6 +4210,7 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
             <select value={form.role} onChange={(e) => set("role", e.target.value)} style={inputStyle2}>
               <option value="admin">أدمن</option><option value="financial_manager">مدير مالي</option><option value="accountant">محاسب</option>
               <option value="branch_manager">مدير فرع</option><option value="cashier">كاشير</option>
+              <option value="custody_holder">أمين عهدة</option>
             </select>
           </div>
           {needsBranch && (
