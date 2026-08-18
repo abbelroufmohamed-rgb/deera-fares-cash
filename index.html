@@ -215,21 +215,29 @@ const dangerBtn = { background: "#fff", color: C.danger, border: "1px solid #fca
 /* ============ إدارة المؤسسات (سوبر أدمن فقط) ============ */
 /* ============ شاشة أمين العهدة: عرض عهدته + تصوير فواتير مباشرة من الكاميرا ============ */
 /* عرض مرفق (صورة أو PDF) بشكل موحّد */
-function AttachmentThumb({ url, fileType, size = 40 }) {
+function AttachmentThumb({ url, fileType, size = 40, onRemove }) {
   if (!url) return "—";
-  if (fileType === "pdf") {
-    return (
-      <a href={url} target="_blank" rel="noreferrer" style={{
-        display: "flex", alignItems: "center", justifyContent: "center", width: size, height: size,
-        borderRadius: 6, background: "#fef2f2", border: "1px solid #fecaca", fontSize: size > 60 ? 11 : 9,
-        fontWeight: 800, color: "#b91c1c", textDecoration: "none"
-      }}>PDF</a>
-    );
-  }
-  return (
+  const inner = fileType === "pdf" ? (
+    <a href={url} target="_blank" rel="noreferrer" style={{
+      display: "flex", alignItems: "center", justifyContent: "center", width: size, height: size,
+      borderRadius: 6, background: "#fef2f2", border: "1px solid #fecaca", fontSize: size > 60 ? 11 : 9,
+      fontWeight: 800, color: "#b91c1c", textDecoration: "none"
+    }}>PDF</a>
+  ) : (
     <a href={url} target="_blank" rel="noreferrer">
       <img src={url} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 6, border: "1px solid " + C.border }} />
     </a>
+  );
+  if (!onRemove) return inner;
+  return (
+    <div style={{ position: "relative", display: "inline-block" }} className="no-print">
+      {inner}
+      <span onClick={onRemove} title="حذف المرفق" style={{
+        position: "absolute", top: -6, left: -6, width: 18, height: 18, borderRadius: "50%",
+        background: C.danger, color: "#fff", fontSize: 12, fontWeight: 800, lineHeight: "18px",
+        textAlign: "center", cursor: "pointer", boxShadow: "0 1px 3px rgba(0,0,0,0.3)"
+      }}>×</span>
+    </div>
   );
 }
 
@@ -263,7 +271,7 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     return Math.max(0, (Number(c.amount) || 0) - loggedTotal(c));
   }
 
-  function getForm(id) { return forms[id] || { amount: "", description: "", date: todayStr(), photo: null }; }
+  function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }; }
   function setForm(id, key, val) { setForms((f) => ({ ...f, [id]: { ...getForm(id), [key]: val } })); }
 
   function compressImage(file, maxDim, quality) {
@@ -327,10 +335,13 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     if (!f.description.trim()) { setMsg("اكتب وش هذا المصروف"); return; }
     setSavingId(c.id); setMsg("");
     try {
-      const entry = { id: uid(), amount: amt, description: f.description.trim(), date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null, enteredAt: Date.now() };
+      const entry = {
+        id: uid(), amount: amt, description: f.description.trim(), supplierName: (f.supplierName || "").trim(),
+        date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null, enteredAt: Date.now(),
+      };
       const updated = [...(c.expenseLog || []), entry];
       await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
-      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", date: todayStr(), photo: null, fileType: null } }));
+      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", date: todayStr(), photo: null, fileType: null } }));
       setMsg("✅ تم تسجيل المصروف بنجاح");
     } catch (e) { setMsg("خطأ: " + e.message); }
     setSavingId(null);
@@ -339,6 +350,12 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   async function deleteExpense(c, entryId) {
     if (!confirm("تحذف هذا المصروف من تسجيلك؟")) return;
     const updated = (c.expenseLog || []).filter((e) => e.id !== entryId);
+    await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
+  }
+
+  async function removeAttachment(c, entryId) {
+    if (!confirm("تحذف المرفق (الصورة/PDF) من هذا المصروف؟ المصروف نفسه هيفضل زي ما هو.")) return;
+    const updated = (c.expenseLog || []).map((e) => e.id === entryId ? { ...e, photoUrl: null, fileType: null } : e);
     await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
   }
 
@@ -354,39 +371,61 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     const log = reportCustody.expenseLog || [];
     const total = loggedTotal(reportCustody);
     const rem = remainingByLog(reportCustody);
+
+    // بناء كشف الحساب: صف افتتاحي (استلام العهدة) + كل مصروف مرتّب زمنيًا، مع رصيد متبقي بعد كل حركة
+    const sortedLog = [...log].sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.enteredAt || 0) - (b.enteredAt || 0));
+    let runningBalance = Number(reportCustody.amount) || 0;
+    const ledgerRows = sortedLog.map((e) => {
+      runningBalance -= Number(e.amount) || 0;
+      return { ...e, balanceAfter: runningBalance };
+    });
+
     return (
       <div>
         <div className="no-print" style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-          <button onClick={doPrint} style={smallBtn}>🖨️ طباعة التقرير</button>
+          <button onClick={doPrint} style={smallBtn}>🖨️ طباعة كشف الحساب</button>
           <button onClick={() => setReportId(null)} style={ghostBtn}>رجوع</button>
         </div>
         <div className="print-area">
           <div className="print-only-header">
             <h2>{institutionName}</h2>
-            <div>تقرير عهدة — {currentUser.name}</div>
+            <div>كشف حساب عهدة — {currentUser.name}</div>
           </div>
           <div style={cardStyle}>
             <div style={cardTitle}>🧍 بيانات العهدة</div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
-              <div style={{ flex: "1 1 160px" }}><div style={{ fontSize: 12, color: C.muted }}>التاريخ</div><div style={{ fontWeight: 700 }}>{reportCustody.date}</div></div>
+              <div style={{ flex: "1 1 160px" }}><div style={{ fontSize: 12, color: C.muted }}>تاريخ الاستلام</div><div style={{ fontWeight: 700 }}>{reportCustody.date}</div></div>
               <div style={{ flex: "1 1 160px" }}><div style={{ fontSize: 12, color: C.muted }}>المستلم</div><div style={{ fontWeight: 700 }}>{fmt(reportCustody.amount)} ر.س</div></div>
               <div style={{ flex: "1 1 160px" }}><div style={{ fontSize: 12, color: C.muted }}>البيان</div><div style={{ fontWeight: 700 }}>{reportCustody.description || "—"}</div></div>
             </div>
           </div>
           <div style={cardStyle}>
-            <div style={cardTitle}>📋 المصروفات المسجّلة ({log.length})</div>
+            <div style={cardTitle}>📋 كشف الحساب — كل الحركات بالترتيب</div>
             <div style={{ overflowX: "auto" }}>
               <table style={tblStyle}>
-                <thead><tr><th style={th}>التاريخ</th><th style={th}>البيان</th><th style={th}>المبلغ</th></tr></thead>
+                <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد / الجهة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>الرصيد المتبقي</th></tr></thead>
                 <tbody>
-                  {log.map((e) => (
-                    <tr key={e.id}><td style={td}>{e.date}</td><td style={td}>{e.description}</td><td style={td}>{fmt(e.amount)}</td></tr>
+                  <tr style={{ background: C.blueSoft }}>
+                    <td style={td}>{reportCustody.date}</td>
+                    <td style={td}>—</td>
+                    <td style={{ ...td, fontWeight: 700 }}>استلام العهدة</td>
+                    <td style={{ ...td, color: C.success, fontWeight: 700 }}>+{fmt(reportCustody.amount)}</td>
+                    <td style={{ ...td, fontWeight: 800 }}>{fmt(reportCustody.amount)}</td>
+                  </tr>
+                  {ledgerRows.map((e) => (
+                    <tr key={e.id}>
+                      <td style={td}>{e.date}</td>
+                      <td style={td}>{e.supplierName || "—"}</td>
+                      <td style={td}>{e.description}</td>
+                      <td style={{ ...td, color: C.danger }}>-{fmt(e.amount)}</td>
+                      <td style={{ ...td, fontWeight: 800, color: e.balanceAfter < 0 ? C.danger : C.text }}>{fmt(e.balanceAfter)}</td>
+                    </tr>
                   ))}
-                  {log.length === 0 && <tr><td colSpan={3} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>ما فيه مصروفات مسجّلة</td></tr>}
+                  {ledgerRows.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>ما فيه مصروفات مسجّلة بعد</td></tr>}
                 </tbody>
                 <tfoot>
                   <tr style={{ background: C.blueSoft, fontWeight: 800 }}>
-                    <td style={td} colSpan={2}>الإجمالي</td><td style={td}>{fmt(total)}</td>
+                    <td style={td} colSpan={3}>إجمالي المصروف</td><td style={{ ...td, color: C.danger }}>-{fmt(total)}</td><td style={td}>{fmt(rem)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -398,13 +437,17 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div style={{ fontSize: 12, color: C.muted }}>إجمالي المستلم</div>
                 <div style={{ fontSize: 19, fontWeight: 800, color: C.navy }}>{fmt(reportCustody.amount)}</div>
               </div>
+              <div style={{ flex: "1 1 200px", background: C.blueSoft, borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 12, color: C.muted }}>إجمالي المصروف</div>
+                <div style={{ fontSize: 19, fontWeight: 800, color: C.navy }}>{fmt(total)}</div>
+              </div>
               <div style={{ flex: "1 1 200px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "12px 14px" }}>
-                <div style={{ fontSize: 12, color: "#dbe6ff" }}>المتبقي حسب تسجيلك</div>
+                <div style={{ fontSize: 12, color: "#dbe6ff" }}>الرصيد المتبقي حسب تسجيلك</div>
                 <div style={{ fontSize: 19, fontWeight: 800, color: "#fff" }}>{fmt(rem)}</div>
               </div>
             </div>
             <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
-              ملاحظة: هذا التقرير حسب تسجيلك أنت، والمرجع الرسمي النهائي هو تسوية المحاسب/المدير المالي.
+              ملاحظة: كشف الحساب هذا حسب تسجيلك أنت، والمرجع الرسمي النهائي هو تسوية المحاسب/المدير المالي.
             </div>
           </div>
         </div>
@@ -464,7 +507,8 @@ function CustodyHolderTab({ currentUser, institutionName }) {
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
                 <div><label style={smallLabel}>المبلغ</label><input type="number" step="0.01" value={f.amount} onChange={(e) => setForm(c.id, "amount", e.target.value)} style={{ ...inputStyle2, width: 120 }} /></div>
                 <div><label style={smallLabel}>التاريخ</label><input type="date" value={f.date} onChange={(e) => setForm(c.id, "date", e.target.value)} style={inputStyle2} /></div>
-                <div style={{ flex: "1 1 200px" }}><label style={smallLabel}>وش صرفته؟</label><input value={f.description} onChange={(e) => setForm(c.id, "description", e.target.value)} style={inputStyle2} placeholder="مثال: أدوات نظافة، صيانة ماكينة..." /></div>
+                <div style={{ flex: "1 1 160px" }}><label style={smallLabel}>وش صرفته؟</label><input value={f.description} onChange={(e) => setForm(c.id, "description", e.target.value)} style={inputStyle2} placeholder="مثال: أدوات نظافة، صيانة ماكينة..." /></div>
+                <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>اسم المورد / الجهة</label><input value={f.supplierName} onChange={(e) => setForm(c.id, "supplierName", e.target.value)} style={inputStyle2} placeholder="مثال: مؤسسة النور للتجارة" /></div>
                 <div>
                   <input type="file" accept="image/*,application/pdf" ref={(el) => (fileInputRefs.current[c.id] = el)} style={{ display: "none" }}
                     onChange={(e) => { handlePhotoSelect(c.id, e.target.files[0]); e.target.value = ""; }} />
@@ -481,14 +525,15 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>مصروفاتك المسجّلة ({log.length})</div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={tblStyle}>
-                    <thead><tr><th style={th}>التاريخ</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>صورة</th><th style={th}></th></tr></thead>
+                    <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th><th style={th}></th></tr></thead>
                     <tbody>
                       {[...log].reverse().map((e) => (
                         <tr key={e.id}>
                           <td style={td}>{e.date}</td>
+                          <td style={td}>{e.supplierName || "—"}</td>
                           <td style={td}>{e.description}</td>
                           <td style={td}>{fmt(e.amount)}</td>
-                          <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={40} /></td>
+                          <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={40} onRemove={e.photoUrl ? () => removeAttachment(c, e.id) : null} /></td>
                           <td style={td}><span onClick={() => deleteExpense(c, e.id)} style={{ cursor: "pointer", color: C.danger, fontWeight: 700 }}>حذف</span></td>
                         </tr>
                       ))}
@@ -3257,6 +3302,12 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
 
   const filtered = custodies.filter((c) => filterStatus === "all" || statusOf(c) === filterStatus);
 
+  async function removeAttachment(c, entryId) {
+    if (!confirm("تحذف هذا المرفق (الصورة/PDF) بعد مراجعته؟")) return;
+    const updated = (c.expenseLog || []).map((e) => e.id === entryId ? { ...e, photoUrl: null, fileType: null } : e);
+    await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
+  }
+
   async function submitSettlement(c) {
     const cash = Number(cashReturned) || 0;
     const exp = Number(expensed) || 0;
@@ -3325,14 +3376,15 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                             </div>
                             <div style={{ overflowX: "auto" }}>
                               <table style={tblStyle}>
-                                <thead><tr><th style={th}>التاريخ</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>صورة</th></tr></thead>
+                                <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th></tr></thead>
                                 <tbody>
                                   {c.expenseLog.map((e) => (
                                     <tr key={e.id}>
                                       <td style={td}>{e.date}</td>
+                                      <td style={td}>{e.supplierName || "—"}</td>
                                       <td style={td}>{e.description}</td>
                                       <td style={td}>{fmt(e.amount)}</td>
-                                      <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={44} /></td>
+                                      <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={44} onRemove={e.photoUrl ? () => removeAttachment(c, e.id) : null} /></td>
                                     </tr>
                                   ))}
                                 </tbody>
