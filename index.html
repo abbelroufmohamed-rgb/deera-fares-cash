@@ -2337,6 +2337,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
 }
 
 function TreasuryOverview({ treasuries, txs, custodies }) {
+  const [showZero, setShowZero] = useState(false);
   const outstandingCustody = useMemo(() => {
     let total = 0;
     custodies.forEach((c) => {
@@ -2347,6 +2348,10 @@ function TreasuryOverview({ treasuries, txs, custodies }) {
   }, [custodies]);
 
   const grandTotal = treasuries.reduce((s, t) => s + computeTreasuryBalance(t, txs), 0);
+
+  const treasuriesWithBalance = treasuries.map((t) => ({ t, bal: computeTreasuryBalance(t, txs) }));
+  const visibleTreasuries = showZero ? treasuriesWithBalance : treasuriesWithBalance.filter((x) => Math.abs(x.bal) > 0.009);
+  const hiddenCount = treasuriesWithBalance.length - visibleTreasuries.length;
 
   return (
     <div>
@@ -2365,18 +2370,26 @@ function TreasuryOverview({ treasuries, txs, custodies }) {
       </div>
 
       <div style={cardStyle}>
-        <div style={cardTitle}>🏦 أرصدة الخزائن</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ ...cardTitle, marginBottom: 0, border: "none", padding: 0 }}>🏦 أرصدة الخزائن</div>
+          {hiddenCount > 0 && (
+            <label style={{ fontSize: 12, color: C.muted, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={showZero} onChange={(e) => setShowZero(e.target.checked)} style={{ cursor: "pointer" }} />
+              عرض {hiddenCount} خزينة رصيدها صفر
+            </label>
+          )}
+        </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {treasuries.map((t) => {
-            const bal = computeTreasuryBalance(t, txs);
-            return (
-              <div key={t.id} style={{ flex: "1 1 220px", background: "#fff", border: "1px solid " + C.border, borderRadius: 10, padding: "13px 15px" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 6 }}>{t.name}</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: bal < 0 ? C.danger : C.text }}>{fmt(bal)}</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{t.branch ? "فرع: " + t.branch : "خزينة عامة"}</div>
-              </div>
-            );
-          })}
+          {visibleTreasuries.map(({ t, bal }) => (
+            <div key={t.id} style={{ flex: "1 1 220px", background: "#fff", border: "1px solid " + C.border, borderRadius: 10, padding: "13px 15px" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 6 }}>{t.name}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: bal < 0 ? C.danger : C.text }}>{fmt(bal)}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{t.branch ? "فرع: " + t.branch : "خزينة عامة"}</div>
+            </div>
+          ))}
+          {visibleTreasuries.length === 0 && (
+            <div style={{ color: "#9ca3af", fontSize: 13 }}>كل الخزائن رصيدها صفر حاليًا</div>
+          )}
         </div>
       </div>
     </div>
