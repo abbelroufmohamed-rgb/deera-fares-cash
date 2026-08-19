@@ -308,7 +308,18 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   }
 
   function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }; }
-  function setForm(id, key, val) { setForms((f) => ({ ...f, [id]: { ...getForm(id), [key]: val } })); }
+  function setForm(id, key, val) {
+    setForms((f) => ({
+      ...f,
+      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }), [key]: val },
+    }));
+  }
+  function setFormMulti(id, patch) {
+    setForms((f) => ({
+      ...f,
+      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }), ...patch },
+    }));
+  }
 
   function compressImage(file, maxDim, quality) {
     return new Promise((resolve, reject) => {
@@ -352,13 +363,11 @@ function CustodyHolderTab({ currentUser, institutionName }) {
         let dataUrl = await compressImage(file, 900, 0.55);
         if (dataUrl.length > 550000) dataUrl = await compressImage(file, 650, 0.4);
         if (dataUrl.length > 700000) { setMsg("الصورة كبيرة جدًا حتى بعد الضغط — جرّب صورة ثانية بزاوية أبعد"); return; }
-        setForm(custodyId, "photo", dataUrl);
-        setForm(custodyId, "fileType", "image");
+        setFormMulti(custodyId, { photo: dataUrl, fileType: "image" });
       } else {
         const dataUrl = await readFileAsDataURL(file);
         if (dataUrl.length > 700000) { setMsg("ملف الـ PDF كبير جدًا (الحد الأقصى تقريبًا 500 كيلوبايت) — جرّب ملف أصغر أو حوّله لصورة"); return; }
-        setForm(custodyId, "photo", dataUrl);
-        setForm(custodyId, "fileType", "pdf");
+        setFormMulti(custodyId, { photo: dataUrl, fileType: "pdf" });
       }
       setMsg("");
     } catch (e) { setMsg("تعذر تجهيز الملف: " + e.message); }
