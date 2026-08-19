@@ -114,7 +114,7 @@ const PAYROLL_COL = db.collection("cashReconPayroll");
 const DENOMINATIONS = [500, 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.25];
 const TX_CATEGORIES = [
   "رواتب وأجور", "إيجار", "مرافق (كهرباء/مياه/إنترنت)", "توريد ومشتريات", "صيانة",
-  "تسويق وإعلان", "ضرائب ورسوم حكومية", "تحصيل مبيعات", "رأس مال / تمويل", "نثريات ومصروفات متنوعة", "أخرى",
+  "بنزين ومحروقات", "تسويق وإعلان", "ضرائب ورسوم حكومية", "تحصيل مبيعات", "رأس مال / تمويل", "نثريات ومصروفات متنوعة", "أخرى",
 ];
 const SHIFTS_COL = db.collection("cashReconShifts");
 const NOTIF_COL = db.collection("cashReconNotifications");
@@ -313,17 +313,17 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     return Math.max(0, (Number(c.amount) || 0) - loggedTotal(expenses));
   }
 
-  function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }; }
+  function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null }; }
   function setForm(id, key, val) {
     setForms((f) => ({
       ...f,
-      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }), [key]: val },
+      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null }), [key]: val },
     }));
   }
   function setFormMulti(id, patch) {
     setForms((f) => ({
       ...f,
-      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }), ...patch },
+      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null }), ...patch },
     }));
   }
 
@@ -389,17 +389,17 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     try {
       const entry = {
         amount: amt, description: f.description.trim(), supplierName: (f.supplierName || "").trim(),
-        date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null,
+        category: f.category || "", date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null,
         enteredAt: Date.now(), enteredBy: currentUser.name,
       };
       await custodyExpensesCol(c.id).add(entry);
       await NOTIF_COL.add({
         type: "custody_expense", custodyId: c.id, employeeName: currentUser.name, amount: amt,
         date: f.date, branch: null, institutionId,
-        message: `${currentUser.name} سجّل مصروف عهدة بقيمة ${fmt(amt)} ر.س` + (f.supplierName ? ` — ${f.supplierName}` : "") + (entry.photoUrl ? " (مرفق إثبات)" : ""),
+        message: `${currentUser.name} سجّل مصروف عهدة بقيمة ${fmt(amt)} ر.س` + (f.category ? ` — ${f.category}` : "") + (f.supplierName ? ` — ${f.supplierName}` : "") + (entry.photoUrl ? " (مرفق إثبات)" : ""),
         createdAt: firebase.firestore.FieldValue.serverTimestamp(), readBy: [],
       }).catch(() => {});
-      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", date: todayStr(), photo: null, fileType: null, attaching: false } }));
+      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null, fileType: null, attaching: false } }));
       setMsg(entry.photoUrl ? "✅ تم تسجيل المصروف وحفظ المرفق بنجاح — شوفه في جدول \"مصروفاتك المسجّلة\" تحت" : "✅ تم تسجيل المصروف بنجاح");
     } catch (e) { setMsg("خطأ: " + e.message); }
     setSavingId(null);
@@ -459,10 +459,11 @@ function CustodyHolderTab({ currentUser, institutionName }) {
             <div style={cardTitle}>📋 كشف الحساب — كل الحركات بالترتيب</div>
             <div style={{ overflowX: "auto" }}>
               <table style={tblStyle}>
-                <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد / الجهة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>الرصيد المتبقي</th></tr></thead>
+                <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد / الجهة</th><th style={th}>الفئة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>الرصيد المتبقي</th></tr></thead>
                 <tbody>
                   <tr style={{ background: C.blueSoft }}>
                     <td style={td}>{reportCustody.date}</td>
+                    <td style={td}>—</td>
                     <td style={td}>—</td>
                     <td style={{ ...td, fontWeight: 700 }}>استلام العهدة</td>
                     <td style={{ ...td, color: C.success, fontWeight: 700 }}>+{fmt(reportCustody.amount)}</td>
@@ -472,16 +473,17 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                     <tr key={e.id}>
                       <td style={td}>{e.date}</td>
                       <td style={td}>{e.supplierName || "—"}</td>
+                      <td style={td}>{e.category || "—"}</td>
                       <td style={td}>{e.description}</td>
                       <td style={{ ...td, color: C.danger }}>-{fmt(e.amount)}</td>
                       <td style={{ ...td, fontWeight: 800, color: e.balanceAfter < 0 ? C.danger : C.text }}>{fmt(e.balanceAfter)}</td>
                     </tr>
                   ))}
-                  {ledgerRows.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>ما فيه مصروفات مسجّلة بعد</td></tr>}
+                  {ledgerRows.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>ما فيه مصروفات مسجّلة بعد</td></tr>}
                 </tbody>
                 <tfoot>
                   <tr style={{ background: C.blueSoft, fontWeight: 800 }}>
-                    <td style={td} colSpan={3}>إجمالي المصروف</td><td style={{ ...td, color: C.danger }}>-{fmt(total)}</td><td style={td}>{fmt(rem)}</td>
+                    <td style={td} colSpan={4}>إجمالي المصروف</td><td style={{ ...td, color: C.danger }}>-{fmt(total)}</td><td style={td}>{fmt(rem)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -565,6 +567,13 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div><label style={smallLabel}>التاريخ</label><input type="date" value={f.date} onChange={(e) => setForm(c.id, "date", e.target.value)} style={inputStyle2} /></div>
                 <div style={{ flex: "1 1 160px" }}><label style={smallLabel}>وش صرفته؟</label><input value={f.description} onChange={(e) => setForm(c.id, "description", e.target.value)} style={inputStyle2} placeholder="مثال: أدوات نظافة، صيانة ماكينة..." /></div>
                 <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>اسم المورد / الجهة</label><input value={f.supplierName} onChange={(e) => setForm(c.id, "supplierName", e.target.value)} style={inputStyle2} placeholder="مثال: مؤسسة النور للتجارة" /></div>
+                <div style={{ flex: "1 1 140px" }}>
+                  <label style={smallLabel}>التصنيف</label>
+                  <select value={f.category} onChange={(e) => setForm(c.id, "category", e.target.value)} style={inputStyle2}>
+                    <option value="">بدون تصنيف</option>
+                    {TX_CATEGORIES.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
+                  </select>
+                </div>
                 <div>
                   <input type="file" accept="image/*,application/pdf" ref={(el) => (fileInputRefs.current[c.id] = el)} style={{ display: "none" }}
                     onChange={(e) => { handlePhotoSelect(c.id, e.target.files[0]); e.target.value = ""; }} />
@@ -587,12 +596,13 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>مصروفاتك المسجّلة ({log.length})</div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={tblStyle}>
-                    <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th><th style={th}></th></tr></thead>
+                    <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>الفئة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th><th style={th}></th></tr></thead>
                     <tbody>
                       {[...log].reverse().map((e) => (
                         <tr key={e.id}>
                           <td style={td}>{e.date}</td>
                           <td style={td}>{e.supplierName || "—"}</td>
+                          <td style={td}>{e.category || "—"}</td>
                           <td style={td}>{e.description}</td>
                           <td style={td}>{fmt(e.amount)}</td>
                           <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={40} onRemove={e.photoUrl ? () => removeAttachment(c, e.id) : null} /></td>
@@ -2372,6 +2382,22 @@ function TreasuryOverview({ treasuries, txs, custodies }) {
   const visibleTreasuries = showZero ? treasuriesWithBalance : treasuriesWithBalance.filter((x) => Math.abs(x.bal) > 0.009);
   const hiddenCount = treasuriesWithBalance.length - visibleTreasuries.length;
 
+  // ملخّص سريع لكل موظف عنده عهدة/سلفة — كم استلم وكم باقي عليه، من غير ما تفتح كل واحد لوحده
+  const employeeSummary = useMemo(() => {
+    const map = {};
+    custodies.forEach((c) => {
+      const settled = (c.settlements || []).reduce((s, x) => s + (Number(x.cashReturned) || 0) + (Number(x.expensed) || 0), 0);
+      const remaining = Math.max(0, (Number(c.amount) || 0) - settled);
+      const key = c.employeeName || "—";
+      if (!map[key]) map[key] = { name: key, count: 0, totalReceived: 0, totalSettled: 0, remaining: 0 };
+      map[key].count += 1;
+      map[key].totalReceived += Number(c.amount) || 0;
+      map[key].totalSettled += settled;
+      map[key].remaining += remaining;
+    });
+    return Object.values(map).sort((a, b) => b.remaining - a.remaining);
+  }, [custodies]);
+
   return (
     <div>
       <div style={cardStyle}>
@@ -2387,6 +2413,33 @@ function TreasuryOverview({ treasuries, txs, custodies }) {
           </div>
         </div>
       </div>
+
+      {employeeSummary.length > 0 && (
+        <div style={cardStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }} className="no-print">
+            <div style={{ ...cardTitle, marginBottom: 0, border: "none", padding: 0 }}>🧍 ملخّص عهد الموظفين — نظرة سريعة</div>
+            <button onClick={() => window.print()} style={ghostBtn}>🖨️ طباعة الملخّص</button>
+          </div>
+          <div className="print-only-header"><h2>ملخّص عهد الموظفين</h2></div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }} className="no-print">كل موظف عنده عهدة/سلفة، كم استلم إجمالًا وكم متبقي عليه — من غير ما تحتاج تفتح تفاصيله لوحده.</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={tblStyle}>
+              <thead><tr><th style={th}>الموظف</th><th style={th}>عدد العهد</th><th style={th}>إجمالي المستلم</th><th style={th}>إجمالي المسدد</th><th style={th}>المتبقي عليه</th></tr></thead>
+              <tbody>
+                {employeeSummary.map((e) => (
+                  <tr key={e.name}>
+                    <td style={{ ...td, fontWeight: 700 }}>{e.name}</td>
+                    <td style={td}>{e.count}</td>
+                    <td style={td}>{fmt(e.totalReceived)}</td>
+                    <td style={{ ...td, color: C.success }}>{fmt(e.totalSettled)}</td>
+                    <td style={{ ...td, fontWeight: 800, color: e.remaining > 0 ? C.danger : C.success }}>{fmt(e.remaining)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -3662,12 +3715,13 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                               </div>
                               <div style={{ overflowX: "auto" }}>
                                 <table style={tblStyle}>
-                                  <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th></tr></thead>
+                                  <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>الفئة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th></tr></thead>
                                   <tbody>
                                     {custodyLog.map((e) => (
                                       <tr key={e.id}>
                                         <td style={td}>{e.date}</td>
                                         <td style={td}>{e.supplierName || "—"}</td>
+                                        <td style={td}>{e.category || "—"}</td>
                                         <td style={td}>{e.description}</td>
                                         <td style={td}>{fmt(e.amount)}</td>
                                         <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={44} onRemove={e.photoUrl ? () => removeAttachment(c.id, e.id) : null} /></td>
