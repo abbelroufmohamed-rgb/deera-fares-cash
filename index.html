@@ -1227,9 +1227,12 @@ async function syncShortageNotification(shiftId, shift, meta, institutionId) {
 
 function EntryTab({ currentUser, meta, users }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
-  const lockedBranch = currentUser.role === "branch_manager" ? currentUser.branch : null; // مدير الفرع لسه فرع واحد بس
-  const cashierBranches = currentUser.role === "cashier" ? userBranches(currentUser) : null; // الكاشير ممكن يكون على أكتر من فرع
-  const defaultBranch = lockedBranch || (cashierBranches && cashierBranches[0]) || (meta.branches[0] || "");
+  // مدير الفرع والكاشير ممكن يكونوا معيّنين على أكتر من فرع دلوقتي
+  const isBranchRestricted = currentUser.role === "branch_manager" || currentUser.role === "cashier";
+  const restrictedBranches = isBranchRestricted ? userBranches(currentUser) : null;
+  const lockedBranch = (restrictedBranches && restrictedBranches.length === 1) ? restrictedBranches[0] : null;
+  const cashierBranches = currentUser.role === "cashier" ? restrictedBranches : null;
+  const defaultBranch = (restrictedBranches && restrictedBranches[0]) || (meta.branches[0] || "");
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState({
     ...emptyShift,
@@ -1249,11 +1252,11 @@ function EntryTab({ currentUser, meta, users }) {
       let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
       if (currentUser.role === "cashier") data = data.filter((r) => r.cashierName === currentUser.name);
-      if (lockedBranch) data = data.filter((r) => r.branch === lockedBranch);
+      if (restrictedBranches) data = data.filter((r) => restrictedBranches.includes(r.branch));
       setRecent(data.slice(0, 8));
     });
     return unsub;
-  }, [currentUser, lockedBranch, institutionId]);
+  }, [currentUser, restrictedBranches && restrictedBranches.join(","), institutionId]);
 
   const calc = useMemo(() => computeShift(form), [form]);
   function set(key, val) { setForm((f) => ({ ...f, [key]: val })); }
@@ -1313,8 +1316,8 @@ function EntryTab({ currentUser, meta, users }) {
     await NOTIF_COL.doc(r.id).delete().catch(() => {});
   }
 
-  const branches = lockedBranch ? [lockedBranch] : (cashierBranches && cashierBranches.length ? cashierBranches : meta.branches);
-  const branchSelectDisabled = !!lockedBranch || (cashierBranches && cashierBranches.length <= 1);
+  const branches = (restrictedBranches && restrictedBranches.length) ? restrictedBranches : meta.branches;
+  const branchSelectDisabled = restrictedBranches && restrictedBranches.length <= 1;
 
   return (
     <div>
@@ -1322,7 +1325,7 @@ function EntryTab({ currentUser, meta, users }) {
         <div style={cardTitle}>{editId ? "✏️ تعديل وردية" : "📝 وردية جديدة"}</div>
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
           <div style={{ flex: "1 1 160px" }}>
-            <label style={smallLabel}>الفرع {cashierBranches && cashierBranches.length > 1 ? "(معيّن على أكتر من فرع — اختار اللي شغال فيه دلوقتي)" : ""}</label>
+            <label style={smallLabel}>الفرع {restrictedBranches && restrictedBranches.length > 1 ? "(معيّن على أكتر من فرع — اختار اللي شغال فيه دلوقتي)" : ""}</label>
             <select value={form.branch} onChange={(e) => set("branch", e.target.value)} disabled={branchSelectDisabled} style={inputStyle2}>
               {branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
@@ -1604,8 +1607,10 @@ function SmartInsights({ rows }) {
 
 function ReportTab({ currentUser, meta, users, institutionName }) {
   const isCashier = currentUser.role === "cashier";
+  const isBranchManager = currentUser.role === "branch_manager";
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
-  const lockedBranch = currentUser.role === "branch_manager" ? currentUser.branch : null; // الكاشير ممكن يشتغل في أكتر من فرع، تقريره بيتفلتر باسمه مش بفرع واحد
+  const managerBranches = isBranchManager ? userBranches(currentUser) : null; // مدير الفرع ممكن يكون معيّن على أكتر من فرع دلوقتي
+  const lockedBranch = (managerBranches && managerBranches.length === 1) ? managerBranches[0] : null;
   const canSeeAllBranches = currentUser.role === "admin" || currentUser.role === "accountant";
 
   const [mode, setMode] = useState(isCashier ? "cashier" : "branch"); // "branch" | "cashier" | "section" | "tree"
@@ -1627,7 +1632,12 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
       let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
       data = data.filter((r) => r.date && dateInRange(r.date, fromDate, toDate));
-      if (!lockedBranch && branch !== "الكل") data = data.filter((r) => r.branch === branch);
+      if (managerBranches && managerBranches.length > 1) {
+        data = data.filter((r) => managerBranches.includes(r.branch));
+        if (branch !== "الكل") data = data.filter((r) => r.branch === branch);
+      } else if (!lockedBranch && branch !== "الكل") {
+        data = data.filter((r) => r.branch === branch);
+      }
       if (mode === "cashier" && cashierFilter !== "الكل") data = data.filter((r) => r.cashierName === cashierFilter);
       if (mode === "section" && sectionFilter !== "الكل") {
         const sec = (meta.sections || []).find((s) => s.name === sectionFilter);
@@ -1644,7 +1654,7 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
       setLoading(false);
     });
     return unsub;
-  }, [branch, fromDate, toDate, lockedBranch, mode, cashierFilter, sectionFilter, treeNodeFilter, isCashier, meta.sections, meta.branchTree, institutionId]);
+  }, [branch, fromDate, toDate, lockedBranch, managerBranches && managerBranches.join(","), mode, cashierFilter, sectionFilter, treeNodeFilter, isCashier, meta.sections, meta.branchTree, institutionId]);
 
   const totals = useMemo(() => {
     const t = { collection: 0, totalCollection: 0, totalFoodicsSales: 0, totalShortage: 0, actualShortage: 0 };
@@ -1702,7 +1712,7 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
 
   const sectionOptions = ["الكل", ...(meta.sections || []).map((s) => s.name)];
 
-  const branchOptions = ["الكل", ...meta.branches];
+  const branchOptions = managerBranches && managerBranches.length > 1 ? ["الكل", ...managerBranches] : ["الكل", ...meta.branches];
   const allCashierNames = useMemo(() => {
     const fromUsers = users.filter((u) => u.role === "cashier" && (!lockedBranch || userBranches(u).includes(lockedBranch))).map((u) => u.name);
     return ["الكل", ...Array.from(new Set(fromUsers))];
@@ -1734,7 +1744,7 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
           )}
         </div>
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
-          {mode === "branch" && !lockedBranch && (
+          {mode === "branch" && (!lockedBranch || (managerBranches && managerBranches.length > 1)) && (
             <div>
               <label style={smallLabel}>الفرع</label>
               <select value={branch} onChange={(e) => setBranch(e.target.value)} style={inputStyle2}>
@@ -4860,15 +4870,15 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
       seenNow.add(uname);
       toAdd.push({
         id: uid(), username: uname, password: r.password.trim(), name: r.name.trim(), role: r.role,
-        branch: r.role === "branch_manager" ? r.branch : "",
-        branches: r.role === "cashier" && r.branch ? [r.branch] : [],
+        branch: "",
+        branches: (r.role === "cashier" || r.role === "branch_manager") && r.branch ? [r.branch] : [],
         institutionId,
       });
     }
     if (toAdd.length === 0) { setBulkMsg("كل أسماء المستخدمين المدخلة موجودة بالفعل"); return; }
     await USERS_DOC.set({ list: [...allUsers, ...toAdd] });
     setBulkRows([emptyBulkRow(), emptyBulkRow(), emptyBulkRow()]);
-    setBulkMsg("✅ تمت إضافة " + toAdd.length + " مستخدم بنجاح — لو الكاشير محتاج أكتر من فرع، عدّله من الجدول تحت وأضف باقي الفروع");
+    setBulkMsg("✅ تمت إضافة " + toAdd.length + " مستخدم بنجاح — لو أي حد محتاج أكتر من فرع، عدّله من الجدول تحت وأضف باقي الفروع");
   }
 
   /* -------- تعديل مستخدم موجود -------- */
@@ -4880,9 +4890,9 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
 
   async function saveUser() {
     if (!form.username.trim() || !form.password.trim() || !form.name.trim()) { setMsg("من فضلك أكمل اسم المستخدم وكلمة المرور والاسم"); return; }
-    if (form.role === "cashier" && (!form.branches || form.branches.length === 0)) { setMsg("اختر فرع واحد على الأقل للكاشير"); return; }
+    if (isMultiBranchRole && (!form.branches || form.branches.length === 0)) { setMsg("اختر فرع واحد على الأقل"); return; }
     const payload = { ...form };
-    if (form.role === "cashier") { payload.branch = ""; payload.branches = form.branches || []; }
+    if (isMultiBranchRole) { payload.branch = ""; payload.branches = form.branches || []; }
     else { payload.branches = []; }
     const list = allUsers.slice();
     if (editingId) {
@@ -4906,7 +4916,7 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
   }
 
   const needsBranch = form.role === "branch_manager" || form.role === "cashier";
-  const isCashierRole = form.role === "cashier";
+  const isMultiBranchRole = form.role === "cashier" || form.role === "branch_manager";
   function toggleFormBranch(b) {
     setForm((f) => {
       const cur = f.branches || [];
@@ -4979,7 +4989,7 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
               <option value="custody_holder">أمين عهدة</option>
             </select>
           </div>
-          {needsBranch && !isCashierRole && (
+          {needsBranch && !isMultiBranchRole && (
             <div style={{ flex: "1 1 150px" }}>
               <label style={smallLabel}>الفرع</label>
               <select value={form.branch} onChange={(e) => set("branch", e.target.value)} style={inputStyle2}>
@@ -4989,9 +4999,9 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
             </div>
           )}
         </div>
-        {isCashierRole && (
+        {isMultiBranchRole && (
           <div style={{ marginTop: 4, marginBottom: 14 }}>
-            <label style={smallLabel}>الفروع (الكاشير يقدر يشتغل في أكتر من فرع — اختار كل الفروع اللي هيشتغل فيها)</label>
+            <label style={smallLabel}>الفروع (الموظف يقدر يشتغل في أكتر من فرع — اختار كل الفروع اللي هيشتغل فيها)</label>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {meta.branches.map((b) => {
                 const checked = (form.branches || []).includes(b);
