@@ -2350,7 +2350,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
       </div>
       {sub === "overview" && <TreasuryOverview treasuries={treasuries} txs={txs} custodies={custodies} />}
       {sub === "analysis" && <TreasuryAnalysis treasuries={treasuries} txs={txs} custodies={custodies} cashCounts={cashCounts} institutionName={institutionName} />}
-      {sub === "newTx" && <TreasuryNewTx currentUser={currentUser} treasuries={treasuries} users={users} institutionId={institutionId} />}
+      {sub === "newTx" && <TreasuryNewTx currentUser={currentUser} treasuries={treasuries} users={users} institutionId={institutionId} institutionName={institutionName} />}
       {sub === "payroll" && (
         <TreasuryPayroll
           currentUser={currentUser} treasuries={treasuries} employees={employees} payrollRecords={payrollRecords}
@@ -3322,7 +3322,7 @@ function PayrollEmployees({ employees, institutionId, treasuries }) {
   );
 }
 
-function TreasuryNewTx({ currentUser, treasuries, users, institutionId }) {
+function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institutionName }) {
   const [type, setType] = useState("deposit");
   const [treasuryId, setTreasuryId] = useState(treasuries[0]?.id || "");
   const [toTreasuryId, setToTreasuryId] = useState(treasuries[1]?.id || treasuries[0]?.id || "");
@@ -3333,6 +3333,7 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId }) {
   const [category, setCategory] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [freshVoucher, setFreshVoucher] = useState(null);
 
   async function save() {
     const amt = Number(amount);
@@ -3344,22 +3345,28 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId }) {
     setSaving(true); setMsg("");
     try {
       const base = { date, description, institutionId, enteredBy: currentUser.name, enteredByRole: currentUser.role, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
+      let voucherTx = null;
       if (type === "transfer_out") {
         const transferGroupId = uid();
-        await TREASURY_TX_COL.add({ ...base, treasuryId, type: "transfer_out", amount: amt, relatedTreasuryId: toTreasuryId, transferGroupId });
+        const outRef = await TREASURY_TX_COL.add({ ...base, treasuryId, type: "transfer_out", amount: amt, relatedTreasuryId: toTreasuryId, transferGroupId });
         await TREASURY_TX_COL.add({ ...base, treasuryId: toTreasuryId, type: "transfer_in", amount: amt, relatedTreasuryId: treasuryId, transferGroupId });
-        setMsg("✅ تم تسجيل التحويل بنجاح");
+        setMsg("✅ تم تسجيل التحويل بنجاح — السند جاهز تحت للطباعة");
+        voucherTx = { id: outRef.id, treasuryId, type: "transfer_out", amount: amt, relatedTreasuryId: toTreasuryId, date, description };
       } else if (type === "custody_out") {
         const custodyRef = await CUSTODIES_COL.add({
           treasuryId, employeeName, amount: amt, date, description, institutionId, settlements: [], createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
-        await TREASURY_TX_COL.add({ ...base, treasuryId, type: "custody_out", amount: amt, employeeName, custodyId: custodyRef.id });
-        setMsg("✅ تم تسجيل العهدة بنجاح");
+        const txRef = await TREASURY_TX_COL.add({ ...base, treasuryId, type: "custody_out", amount: amt, employeeName, custodyId: custodyRef.id });
+        setMsg("✅ تم تسجيل العهدة بنجاح — السند جاهز تحت للطباعة");
+        voucherTx = { id: txRef.id, treasuryId, type: "custody_out", amount: amt, employeeName, date, description };
       } else {
-        await TREASURY_TX_COL.add({ ...base, treasuryId, type, amount: amt, category: category || "" });
-        setMsg("✅ تم تسجيل الحركة بنجاح");
+        const txRef = await TREASURY_TX_COL.add({ ...base, treasuryId, type, amount: amt, category: category || "" });
+        setMsg("✅ تم تسجيل الحركة بنجاح — السند جاهز تحت للطباعة");
+        voucherTx = { id: txRef.id, treasuryId, type, amount: amt, category: category || "", date, description };
       }
       setAmount(""); setDescription(""); setEmployeeName(""); setCategory("");
+      const voucherNo = await assignVoucherNoIfMissing(voucherTx, institutionId);
+      setFreshVoucher({ ...voucherTx, voucherNo, enteredBy: currentUser.name });
     } catch (e) { setMsg("خطأ: " + e.message); }
     setSaving(false);
   }
@@ -3422,6 +3429,15 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId }) {
         {saving ? "جارِ الحفظ..." : "💾 حفظ الحركة"}
       </button>
       {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+
+      {freshVoucher && (
+        <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px dashed " + C.border }} className="no-print">
+          <div style={{ fontWeight: 700, fontSize: 13.5, color: C.navy, marginBottom: 10 }}>🧾 سند الحركة اللي حفظتها الآن</div>
+        </div>
+      )}
+      {freshVoucher && (
+        <VoucherPrintView voucher={freshVoucher} treasuries={treasuries} onPrint={() => window.print()} onClose={() => setFreshVoucher(null)} institutionName={institutionName} />
+      )}
     </div>
   );
 }
