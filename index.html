@@ -136,6 +136,25 @@ const ROLE_LABELS = {
   custody_holder: "أمين عهدة",
 };
 
+/* ============ الصلاحيات الافتراضية لكل تبويب (قابلة للتخصيص من الإعدادات لكل مؤسسة) ============ */
+const TAB_DEFS = [
+  { id: "entry", icon: "entry", label: "تسجيل وردية" },
+  { id: "report", icon: "report", label: "التقارير" },
+  { id: "expenseRequest", icon: "send", label: "طلب صرف" },
+  { id: "custodyReview", icon: "bank", label: "عهد الموظفين" },
+  { id: "treasury", icon: "bank", label: "الخزينة" },
+  { id: "settings", icon: "settings", label: "الإعدادات" },
+];
+const CONFIGURABLE_ROLES = ["admin", "financial_manager", "accountant", "branch_manager", "cashier", "custody_holder"];
+const DEFAULT_TAB_PERMISSIONS = {
+  entry: ["admin", "accountant", "branch_manager", "cashier"],
+  report: ["admin", "accountant", "branch_manager", "cashier"],
+  expenseRequest: ["admin", "financial_manager", "accountant", "branch_manager"],
+  custodyReview: ["accountant"],
+  treasury: ["admin", "financial_manager"],
+  settings: ["admin"],
+};
+
 /* ============ ألوان الهوية (أزرق / أبيض) ============ */
 const C = {
   navy: "#0f2557",
@@ -845,15 +864,10 @@ function App() {
 
 function MainLayout({ currentUser, users, meta, institutions, institutionName, tab, setTab, onLogout }) {
   const institutionUsers = users.filter((u) => (u.institutionId || DEFAULT_INSTITUTION_ID) === (currentUser.institutionId || DEFAULT_INSTITUTION_ID));
-  const tabs = [
-    { id: "entry", icon: "entry", label: "تسجيل وردية", roles: ["admin", "accountant", "branch_manager", "cashier"] },
-    { id: "report", icon: "report", label: "التقارير", roles: ["admin", "accountant", "branch_manager", "cashier"] },
-    { id: "expenseRequest", icon: "send", label: "طلب صرف", roles: ["admin", "financial_manager", "accountant", "branch_manager"] },
-    { id: "custodyReview", icon: "bank", label: "عهد الموظفين", roles: ["accountant"] },
-    { id: "treasury", icon: "bank", label: "الخزينة", roles: ["admin", "financial_manager"] },
-    { id: "settings", icon: "settings", label: "الإعدادات", roles: ["admin"] },
-    { id: "myCustody", icon: "bank", label: "عهدتي", roles: ["custody_holder"] },
-  ].filter((t) => t.roles.includes(currentUser.role));
+  const effectivePerms = { ...DEFAULT_TAB_PERMISSIONS, ...(meta.tabPermissions || {}) };
+  const tabs = TAB_DEFS
+    .filter((t) => (effectivePerms[t.id] || []).includes(currentUser.role) || (t.id === "settings" && currentUser.role === "admin"))
+    .concat([{ id: "myCustody", icon: "bank", label: "عهدتي" }].filter(() => currentUser.role === "custody_holder"));
   if (currentUser.isSuperAdmin) tabs.push({ id: "institutions", icon: "building", label: "إدارة المؤسسات" });
 
   return (
@@ -897,10 +911,10 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
         {tab === "expenseRequest" && (
           <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} />
         )}
-        {tab === "custodyReview" && currentUser.role === "accountant" && (
+        {tab === "custodyReview" && (effectivePerms.custodyReview || []).includes(currentUser.role) && (
           <CustodyReviewTab currentUser={currentUser} />
         )}
-        {tab === "treasury" && (currentUser.role === "admin" || currentUser.role === "financial_manager") && (
+        {tab === "treasury" && (effectivePerms.treasury || []).includes(currentUser.role) && (
           <TreasuryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />
         )}
         {tab === "settings" && currentUser.role === "admin" && <SettingsTab meta={meta} users={institutionUsers} allUsers={users} currentUser={currentUser} />}
@@ -1554,10 +1568,11 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
   const lockedBranch = currentUser.role === "branch_manager" ? currentUser.branch : (isCashier ? currentUser.branch : null);
   const canSeeAllBranches = currentUser.role === "admin" || currentUser.role === "accountant";
 
-  const [mode, setMode] = useState(isCashier ? "cashier" : "branch"); // "branch" | "cashier" | "section"
+  const [mode, setMode] = useState(isCashier ? "cashier" : "branch"); // "branch" | "cashier" | "section" | "tree"
   const [branch, setBranch] = useState(lockedBranch || "الكل");
   const [cashierFilter, setCashierFilter] = useState(isCashier ? currentUser.name : "الكل");
   const [sectionFilter, setSectionFilter] = useState("الكل");
+  const [treeNodeFilter, setTreeNodeFilter] = useState("");
   const initRange = presetRange("thisMonth");
   const [fromDate, setFromDate] = useState(initRange.from);
   const [toDate, setToDate] = useState(initRange.to);
@@ -1579,13 +1594,17 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
         const secBranches = sec ? (sec.branches || []) : [];
         data = data.filter((r) => secBranches.includes(r.branch));
       }
+      if (mode === "tree" && treeNodeFilter) {
+        const treeBranches = collectDescendantBranchNames(treeNodeFilter, meta.branchTree || []);
+        data = data.filter((r) => treeBranches.includes(r.branch));
+      }
       if (isCashier) data = data.filter((r) => r.cashierName === currentUser.name);
       data.sort((a, b) => (a.date + a.shiftLabel).localeCompare(b.date + b.shiftLabel));
       setRows(data);
       setLoading(false);
     });
     return unsub;
-  }, [branch, fromDate, toDate, lockedBranch, mode, cashierFilter, sectionFilter, isCashier, meta.sections, institutionId]);
+  }, [branch, fromDate, toDate, lockedBranch, mode, cashierFilter, sectionFilter, treeNodeFilter, isCashier, meta.sections, meta.branchTree, institutionId]);
 
   const totals = useMemo(() => {
     const t = { collection: 0, totalCollection: 0, totalFoodicsSales: 0, totalShortage: 0, actualShortage: 0 };
@@ -1670,6 +1689,9 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
           {!isCashier && canSeeAllBranches && (meta.sections || []).length > 0 && (
             <button onClick={() => setMode("section")} style={mode === "section" ? smallBtn : ghostBtn}>تقرير حسب القسم</button>
           )}
+          {!isCashier && canSeeAllBranches && (meta.branchTree || []).length > 0 && (
+            <button onClick={() => setMode("tree")} style={mode === "tree" ? smallBtn : ghostBtn}>تقرير حسب الشجرة</button>
+          )}
         </div>
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
           {mode === "branch" && !lockedBranch && (
@@ -1693,6 +1715,15 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
               <label style={smallLabel}>القسم</label>
               <select value={sectionFilter} onChange={(e) => setSectionFilter(e.target.value)} style={inputStyle2}>
                 {sectionOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          )}
+          {mode === "tree" && (
+            <div>
+              <label style={smallLabel}>المجموعة (تشمل كل الفروع تحتها)</label>
+              <select value={treeNodeFilter} onChange={(e) => setTreeNodeFilter(e.target.value)} style={inputStyle2}>
+                <option value="">اختر مجموعة</option>
+                {(meta.branchTree || []).filter((n) => !n.branchName).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
               </select>
             </div>
           )}
@@ -1804,6 +1835,26 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
                     </tr>
                   ))}
                   {(sectionFilter === "الكل" ? bySection : byBranch).length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا بيانات</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {mode === "tree" && treeNodeFilter && (
+          <div style={cardStyle}>
+            <div style={cardTitle}>🌳 توزيع الفروع تحت — {(meta.branchTree || []).find((n) => n.id === treeNodeFilter)?.name}</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={tblStyle}>
+                <thead><tr><th style={th}>الفرع</th><th style={th}>عدد الورديات</th><th style={th}>إجمالي التحصيل</th><th style={th}>إجمالي العجز/الزيادة</th></tr></thead>
+                <tbody>
+                  {byBranch.map((row) => (
+                    <tr key={row.name}>
+                      <td style={td}>{row.name}</td><td style={td}>{row.count}</td><td style={td}>{fmt(row.totalCollection)}</td>
+                      <td style={{ ...td, color: row.totalShortage < 0 ? C.danger : C.success, fontWeight: 700 }}>{fmt(row.totalShortage)}</td>
+                    </tr>
+                  ))}
+                  {byBranch.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا بيانات</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -4141,9 +4192,151 @@ function SettingsTab({ meta, users, allUsers, currentUser }) {
       <ReceiptNumberingSettings meta={meta} institutionId={institutionId} />
       <NotificationSettings meta={meta} institutionId={institutionId} />
       <BranchesSettings meta={meta} institutionId={institutionId} />
+      <BranchTreeSettings meta={meta} institutionId={institutionId} />
       <SectionsSettings meta={meta} institutionId={institutionId} />
       <ShiftsSettings meta={meta} institutionId={institutionId} />
+      <RolePermissionsSettings meta={meta} institutionId={institutionId} />
       <UsersSettings users={users} allUsers={allUsers} meta={meta} institutionId={institutionId} />
+    </div>
+  );
+}
+
+/* ============ شجرة الفروع: هرمية بمستويات غير محدودة، طبقة تنظيمية فوق الفروع التشغيلية الحالية ============
+   meta.branchTree = [{ id, name, parentId (null = جذر), branchName (لو موجودة = عقدة ورقة تمثّل فرع تشغيلي حقيقي) }]
+   الفروع التشغيلية (meta.branches) بتفضل زي ما هي بالظبط — الشجرة دي بس لتنظيم/تجميع التقارير */
+function buildTreeChildren(nodes, parentId) {
+  return nodes.filter((n) => (n.parentId || null) === (parentId || null));
+}
+function collectDescendantBranchNames(nodeId, nodes) {
+  const node = nodes.find((n) => n.id === nodeId);
+  if (!node) return [];
+  let names = node.branchName ? [node.branchName] : [];
+  buildTreeChildren(nodes, nodeId).forEach((child) => { names = names.concat(collectDescendantBranchNames(child.id, nodes)); });
+  return Array.from(new Set(names));
+}
+
+function BranchTreeSettings({ meta, institutionId }) {
+  const tree = meta.branchTree || [];
+  const [addingUnder, setAddingUnder] = useState(null); // parentId (or "root")
+  const [newName, setNewName] = useState("");
+  const [attachBranch, setAttachBranch] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const placedBranchNames = new Set(tree.filter((n) => n.branchName).map((n) => n.branchName));
+  const unplacedBranches = meta.branches.filter((b) => !placedBranchNames.has(b));
+
+  async function addContainer(parentId) {
+    const name = newName.trim();
+    if (!name) { setMsg("اكتب اسم للعقدة"); return; }
+    const updated = [...tree, { id: uid(), name, parentId: parentId === "root" ? null : parentId, branchName: null }];
+    await instMetaDoc(institutionId).update({ branchTree: updated });
+    setNewName(""); setAddingUnder(null); setMsg("");
+  }
+
+  async function attachLeaf(parentId) {
+    if (!attachBranch) { setMsg("اختر فرع لإضافته"); return; }
+    const updated = [...tree, { id: uid(), name: attachBranch, parentId: parentId === "root" ? null : parentId, branchName: attachBranch }];
+    await instMetaDoc(institutionId).update({ branchTree: updated });
+    setAttachBranch(""); setAddingUnder(null); setMsg("");
+  }
+
+  async function removeNode(id) {
+    const descendants = collectAllDescendantIds(id, tree);
+    const msg2 = descendants.length > 0
+      ? `هذه العقدة فيها ${descendants.length} عنصر فرعي جواها، وهيتحذفوا كلهم من الشجرة (الفروع التشغيلية نفسها مش هتتحذف، بس هتبقى غير مصنّفة). متأكد؟`
+      : "تحذف هذه العقدة من الشجرة؟";
+    if (!confirm(msg2)) return;
+    const toRemove = new Set([id, ...descendants]);
+    const updated = tree.filter((n) => !toRemove.has(n.id));
+    await instMetaDoc(institutionId).update({ branchTree: updated });
+  }
+
+  function collectAllDescendantIds(nodeId, nodes) {
+    let ids = [];
+    buildTreeChildren(nodes, nodeId).forEach((c) => { ids.push(c.id); ids = ids.concat(collectAllDescendantIds(c.id, nodes)); });
+    return ids;
+  }
+
+  function TreeNode({ node, depth }) {
+    const children = buildTreeChildren(tree, node.id);
+    const isAdding = addingUnder === node.id;
+    return (
+      <div style={{ marginRight: depth * 22, marginBottom: 6 }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: 8,
+          background: node.branchName ? C.blueSoft : "#fff", border: "1px solid " + C.border
+        }}>
+          <span style={{ fontSize: 13 }}>{node.branchName ? "🏬" : "🗂️"}</span>
+          <span style={{ fontWeight: node.branchName ? 600 : 800, color: node.branchName ? C.text : C.navy, fontSize: 13.5 }}>{node.name}</span>
+          {!node.branchName && (
+            <span onClick={() => { setAddingUnder(isAdding ? null : node.id); setMsg(""); }} style={{ cursor: "pointer", color: C.blue, fontSize: 12, fontWeight: 700, marginRight: "auto" }}>
+              {isAdding ? "إغلاق" : "+ إضافة تحتها"}
+            </span>
+          )}
+          <span onClick={() => removeNode(node.id)} style={{ cursor: "pointer", color: C.danger, fontSize: 12, fontWeight: 700, marginRight: node.branchName ? "auto" : 10 }}>حذف</span>
+        </div>
+        {isAdding && (
+          <div style={{ marginRight: 22, marginTop: 8, background: C.blueSoft, borderRadius: 8, padding: 12 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 8 }}>
+              <div>
+                <label style={smallLabel}>إضافة مجموعة فرعية جديدة</label>
+                <input value={newName} onChange={(e) => setNewName(e.target.value)} style={inputStyle2} placeholder="مثال: مستقبل الاقتصاد - ينبع" />
+              </div>
+              <button onClick={() => addContainer(node.id)} style={smallBtn}>➕ إضافة</button>
+            </div>
+            {unplacedBranches.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                <div>
+                  <label style={smallLabel}>أو أرفق فرع تشغيلي موجود</label>
+                  <select value={attachBranch} onChange={(e) => setAttachBranch(e.target.value)} style={inputStyle2}>
+                    <option value="">اختر فرع</option>
+                    {unplacedBranches.map((b) => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                </div>
+                <button onClick={() => attachLeaf(node.id)} style={ghostBtn}>🏬 إرفاق</button>
+              </div>
+            )}
+          </div>
+        )}
+        {children.map((c) => <TreeNode key={c.id} node={c} depth={depth + 1} />)}
+      </div>
+    );
+  }
+
+  const roots = buildTreeChildren(tree, null);
+  const isAddingRoot = addingUnder === "root";
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>🌳 شجرة الفروع (هيكل تنظيمي بمستويات غير محدودة)</div>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+        نظّم فروعك في هرمية حرة — مجموعة رئيسية تحتها مجموعات فرعية بلا حدود، وفي أي مستوى تقدر تربط فرع تشغيلي حقيقي (اللي شغال بيه في تسجيل الورديات والخزينة). هذا التنظيم للتقارير والعرض بس، وما يأثر على شغل الفروع الفعلي.
+      </div>
+
+      {msg && <div style={{ color: C.danger, fontSize: 13, marginBottom: 10 }}>{msg}</div>}
+
+      {roots.map((n) => <TreeNode key={n.id} node={n} depth={0} />)}
+      {roots.length === 0 && !isAddingRoot && <div style={{ color: "#9ca3af", fontSize: 13, marginBottom: 10 }}>ما فيه هيكل بعد — ابدأ بإضافة أول مجموعة رئيسية</div>}
+
+      <div style={{ marginTop: 12 }}>
+        {isAddingRoot ? (
+          <div style={{ background: C.blueSoft, borderRadius: 8, padding: 12 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div><label style={smallLabel}>اسم المجموعة الرئيسية</label><input value={newName} onChange={(e) => setNewName(e.target.value)} style={inputStyle2} placeholder="مثال: شركة مستقبل الاقتصاد" /></div>
+              <button onClick={() => addContainer("root")} style={smallBtn}>➕ إضافة</button>
+              <button onClick={() => setAddingUnder(null)} style={ghostBtn}>إلغاء</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setAddingUnder("root")} style={smallBtn}>➕ إضافة مجموعة رئيسية جديدة</button>
+        )}
+      </div>
+
+      {unplacedBranches.length > 0 && (
+        <div style={{ marginTop: 16, fontSize: 12.5, color: C.muted }}>
+          فروع تشغيلية لسه غير مصنّفة في الشجرة: {unplacedBranches.join("، ")}
+        </div>
+      )}
     </div>
   );
 }
@@ -4400,6 +4593,64 @@ function ShiftsSettings({ meta, institutionId }) {
 
 const emptyUser = { username: "", password: "", name: "", role: "cashier", branch: "" };
 const emptyBulkRow = () => ({ _rid: uid(), username: "", password: "", name: "", role: "cashier", branch: "" });
+
+/* ============ صلاحيات الأدوار: تحكم من الإعدادات في وصول كل دور لكل تبويب ============ */
+function RolePermissionsSettings({ meta, institutionId }) {
+  const effectivePerms = { ...DEFAULT_TAB_PERMISSIONS, ...(meta.tabPermissions || {}) };
+  const [msg, setMsg] = useState("");
+
+  async function toggle(tabId, role) {
+    const current = effectivePerms[tabId] || [];
+    const updated = current.includes(role) ? current.filter((r) => r !== role) : [...current, role];
+    const newPerms = { ...(meta.tabPermissions || {}), [tabId]: updated };
+    await instMetaDoc(institutionId).update({ tabPermissions: newPerms });
+    setMsg("");
+  }
+
+  async function resetDefaults() {
+    if (!confirm("ترجع كل الصلاحيات للإعدادات الافتراضية؟")) return;
+    await instMetaDoc(institutionId).update({ tabPermissions: {} });
+    setMsg("✅ رجعت الصلاحيات للوضع الافتراضي");
+  }
+
+  const configurableTabs = TAB_DEFS.filter((t) => t.id !== "settings");
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>🔐 صلاحيات الأدوار (من يشوف إيش)</div>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+        حدد أي دور يقدر يوصل لأي تبويب — بدون الحاجة لتعديل أي كود. تبويب "الإعدادات" ثابت للأدمن بس دايمًا (حماية من قفل الوصول بالغلط).
+        ⚠️ تبويب "الخزينة" حساس ماليًا — امنح الوصول له بحذر.
+      </div>
+      {msg && <div style={{ fontSize: 13, color: C.success, marginBottom: 10 }}>{msg}</div>}
+      <div style={{ overflowX: "auto" }}>
+        <table style={tblStyle}>
+          <thead>
+            <tr>
+              <th style={th}>التبويب</th>
+              {CONFIGURABLE_ROLES.map((r) => <th key={r} style={th}>{ROLE_LABELS[r]}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {configurableTabs.map((t) => (
+              <tr key={t.id}>
+                <td style={{ ...td, fontWeight: 700 }}>{t.label}</td>
+                {CONFIGURABLE_ROLES.map((r) => (
+                  <td key={r} style={{ ...td, textAlign: "center" }}>
+                    <input type="checkbox" checked={(effectivePerms[t.id] || []).includes(r)} onChange={() => toggle(t.id, r)} style={{ width: 17, height: 17, cursor: "pointer" }} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <button onClick={resetDefaults} style={ghostBtn}>↺ رجوع للإعدادات الافتراضية</button>
+      </div>
+    </div>
+  );
+}
 
 function UsersSettings({ users, allUsers, meta, institutionId }) {
   /* -------- إضافة جماعية سريعة -------- */
