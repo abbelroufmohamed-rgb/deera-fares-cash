@@ -358,19 +358,20 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     const isImage = file.type.startsWith("image/");
     const isPdf = file.type === "application/pdf";
     if (!isImage && !isPdf) { setMsg("اختر صورة أو ملف PDF بس"); return; }
+    setForm(custodyId, "attaching", true);
     try {
       if (isImage) {
         let dataUrl = await compressImage(file, 900, 0.55);
         if (dataUrl.length > 550000) dataUrl = await compressImage(file, 650, 0.4);
-        if (dataUrl.length > 700000) { setMsg("الصورة كبيرة جدًا حتى بعد الضغط — جرّب صورة ثانية بزاوية أبعد"); return; }
-        setFormMulti(custodyId, { photo: dataUrl, fileType: "image" });
+        if (dataUrl.length > 700000) { setMsg("الصورة كبيرة جدًا حتى بعد الضغط — جرّب صورة ثانية بزاوية أبعد"); setForm(custodyId, "attaching", false); return; }
+        setFormMulti(custodyId, { photo: dataUrl, fileType: "image", attaching: false });
       } else {
         const dataUrl = await readFileAsDataURL(file);
-        if (dataUrl.length > 700000) { setMsg("ملف الـ PDF كبير جدًا (الحد الأقصى تقريبًا 500 كيلوبايت) — جرّب ملف أصغر أو حوّله لصورة"); return; }
-        setFormMulti(custodyId, { photo: dataUrl, fileType: "pdf" });
+        if (dataUrl.length > 700000) { setMsg("ملف الـ PDF كبير جدًا (الحد الأقصى تقريبًا 500 كيلوبايت) — جرّب ملف أصغر أو حوّله لصورة"); setForm(custodyId, "attaching", false); return; }
+        setFormMulti(custodyId, { photo: dataUrl, fileType: "pdf", attaching: false });
       }
-      setMsg("");
-    } catch (e) { setMsg("تعذر تجهيز الملف: " + e.message); }
+      setMsg("✅ تم إرفاق الملف بنجاح — شايفه تحت، واضغط \"حفظ المصروف\" عشان يتسجّل");
+    } catch (e) { setMsg("تعذر تجهيز الملف: " + e.message); setForm(custodyId, "attaching", false); }
   }
 
   async function addExpense(c) {
@@ -392,8 +393,8 @@ function CustodyHolderTab({ currentUser, institutionName }) {
         message: `${currentUser.name} سجّل مصروف عهدة بقيمة ${fmt(amt)} ر.س` + (f.supplierName ? ` — ${f.supplierName}` : "") + (entry.photoUrl ? " (مرفق إثبات)" : ""),
         createdAt: firebase.firestore.FieldValue.serverTimestamp(), readBy: [],
       }).catch(() => {});
-      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", date: todayStr(), photo: null, fileType: null } }));
-      setMsg("✅ تم تسجيل المصروف بنجاح");
+      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", date: todayStr(), photo: null, fileType: null, attaching: false } }));
+      setMsg(entry.photoUrl ? "✅ تم تسجيل المصروف وحفظ المرفق بنجاح — شوفه في جدول \"مصروفاتك المسجّلة\" تحت" : "✅ تم تسجيل المصروف بنجاح");
     } catch (e) { setMsg("خطأ: " + e.message); }
     setSavingId(null);
   }
@@ -561,12 +562,18 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div>
                   <input type="file" accept="image/*,application/pdf" ref={(el) => (fileInputRefs.current[c.id] = el)} style={{ display: "none" }}
                     onChange={(e) => { handlePhotoSelect(c.id, e.target.files[0]); e.target.value = ""; }} />
-                  <button onClick={() => fileInputRefs.current[c.id]?.click()} style={ghostBtn}>
-                    {f.photo ? (f.fileType === "pdf" ? "✅ ملف PDF مرفق" : "✅ صورة مرفقة") : "📎 صورة أو PDF (اختياري)"}
+                  <button onClick={() => fileInputRefs.current[c.id]?.click()} disabled={f.attaching} style={ghostBtn}>
+                    {f.attaching ? "⏳ جارِ التجهيز..." : (f.photo ? (f.fileType === "pdf" ? "🔄 تغيير ملف PDF" : "🔄 تغيير الصورة") : "📎 صورة أو PDF (اختياري)")}
                   </button>
                 </div>
                 <button onClick={() => addExpense(c)} disabled={savingId === c.id} style={smallBtn}>{savingId === c.id ? "جارِ الحفظ..." : "💾 حفظ المصروف"}</button>
               </div>
+              {f.photo && (
+                <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px" }}>
+                  <AttachmentThumb url={f.photo} fileType={f.fileType} size={48} onRemove={() => setFormMulti(c.id, { photo: null, fileType: null })} />
+                  <div style={{ fontSize: 12.5, color: C.success, fontWeight: 700 }}>✅ الملف جاهز ومرفق — هيتحفظ مع المصروف لما تضغط "حفظ المصروف"</div>
+                </div>
+              )}
             </div>
 
             {log.length > 0 && (
@@ -3479,7 +3486,11 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                   <tr>
                     <td style={td}>{c.date}</td>
                     <td style={{ ...td, fontWeight: 700, color: c.kind === "advance" ? "#d97706" : C.navy }}>{c.kind === "advance" ? "💸 سلفة" : "🧍 عهدة"}</td>
-                    <td style={td}>{c.employeeName}</td>
+                    <td style={td}>
+                      <span onClick={() => { setSettlingId(settlingId === c.id ? null : c.id); setMsg(""); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700, textDecoration: "underline", textDecorationStyle: "dotted" }}>
+                        {c.employeeName}
+                      </span>
+                    </td>
                     <td style={td}>{treasuryName}</td>
                     <td style={td}>{c.description || "—"}</td>
                     <td style={td}>{fmt(c.amount)}</td>
