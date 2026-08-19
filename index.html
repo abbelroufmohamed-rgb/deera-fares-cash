@@ -3374,7 +3374,8 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institut
   const cashierNames = Array.from(new Set(users.map((u) => u.name)));
 
   return (
-    <div style={cardStyle}>
+    <div>
+    <div style={cardStyle} className="no-print">
       <div style={cardTitle}>➕ تسجيل حركة خزينة جديدة</div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         {[["deposit", "إيداع / توريد"], ["expense", "صرف"], ["transfer_out", "تحويل بين خزائن"], ["custody_out", "عهدة لموظف"]].map(([k, l]) => (
@@ -3429,15 +3430,18 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institut
         {saving ? "جارِ الحفظ..." : "💾 حفظ الحركة"}
       </button>
       {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+    </div>
+    <TreasuryNewTxVoucherWrapper freshVoucher={freshVoucher} treasuries={treasuries} institutionName={institutionName} setFreshVoucher={setFreshVoucher} />
+    </div>
+  );
+}
 
-      {freshVoucher && (
-        <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px dashed " + C.border }} className="no-print">
-          <div style={{ fontWeight: 700, fontSize: 13.5, color: C.navy, marginBottom: 10 }}>🧾 سند الحركة اللي حفظتها الآن</div>
-        </div>
-      )}
-      {freshVoucher && (
-        <VoucherPrintView voucher={freshVoucher} treasuries={treasuries} onPrint={() => window.print()} onClose={() => setFreshVoucher(null)} institutionName={institutionName} />
-      )}
+function TreasuryNewTxVoucherWrapper({ freshVoucher, treasuries, institutionName, setFreshVoucher }) {
+  if (!freshVoucher) return null;
+  return (
+    <div>
+      <div className="no-print" style={{ fontWeight: 700, fontSize: 13.5, color: C.navy, margin: "18px 0 10px" }}>🧾 سند الحركة اللي حفظتها الآن</div>
+      <VoucherPrintView voucher={freshVoucher} treasuries={treasuries} onPrint={() => window.print()} onClose={() => setFreshVoucher(null)} institutionName={institutionName} />
     </div>
   );
 }
