@@ -174,6 +174,12 @@ const C = {
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
+/* الكاشير ممكن يكون معيّن على أكتر من فرع (users[].branches array) — بترجع القائمة، ولو حساب قديم لسه بحقل branch مفرد بترجعه كمصفوفة من عنصر واحد للتوافق */
+function userBranches(u) {
+  if (u.branches && u.branches.length) return u.branches;
+  if (u.branch) return [u.branch];
+  return [];
+}
 function fmt(n) {
   const v = Number(n) || 0;
   return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1221,11 +1227,13 @@ async function syncShortageNotification(shiftId, shift, meta, institutionId) {
 
 function EntryTab({ currentUser, meta, users }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
-  const lockedBranch = (currentUser.role === "branch_manager" || currentUser.role === "cashier") ? currentUser.branch : null;
+  const lockedBranch = currentUser.role === "branch_manager" ? currentUser.branch : null; // مدير الفرع لسه فرع واحد بس
+  const cashierBranches = currentUser.role === "cashier" ? userBranches(currentUser) : null; // الكاشير ممكن يكون على أكتر من فرع
+  const defaultBranch = lockedBranch || (cashierBranches && cashierBranches[0]) || (meta.branches[0] || "");
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState({
     ...emptyShift,
-    branch: lockedBranch || (meta.branches[0] || ""),
+    branch: defaultBranch,
     shiftLabel: meta.shifts[0] || "",
     date: todayStr(),
     cashierName: currentUser.role === "cashier" ? currentUser.name : "",
@@ -1251,7 +1259,7 @@ function EntryTab({ currentUser, meta, users }) {
   function set(key, val) { setForm((f) => ({ ...f, [key]: val })); }
 
   const cashierOptions = useMemo(() => {
-    return users.filter((u) => u.role === "cashier" && (!form.branch || u.branch === form.branch));
+    return users.filter((u) => u.role === "cashier" && (!form.branch || userBranches(u).includes(form.branch)));
   }, [users, form.branch]);
 
   function canEditRow(r) {
@@ -1268,7 +1276,7 @@ function EntryTab({ currentUser, meta, users }) {
   }
   function cancelEdit() {
     setEditId(null);
-    setForm({ ...emptyShift, branch: lockedBranch || (meta.branches[0] || ""), shiftLabel: meta.shifts[0] || "", date: todayStr(), cashierName: currentUser.role === "cashier" ? currentUser.name : "" });
+    setForm({ ...emptyShift, branch: defaultBranch, shiftLabel: meta.shifts[0] || "", date: todayStr(), cashierName: currentUser.role === "cashier" ? currentUser.name : "" });
   }
 
   async function save() {
@@ -1305,7 +1313,8 @@ function EntryTab({ currentUser, meta, users }) {
     await NOTIF_COL.doc(r.id).delete().catch(() => {});
   }
 
-  const branches = lockedBranch ? [lockedBranch] : meta.branches;
+  const branches = lockedBranch ? [lockedBranch] : (cashierBranches && cashierBranches.length ? cashierBranches : meta.branches);
+  const branchSelectDisabled = !!lockedBranch || (cashierBranches && cashierBranches.length <= 1);
 
   return (
     <div>
@@ -1313,8 +1322,8 @@ function EntryTab({ currentUser, meta, users }) {
         <div style={cardTitle}>{editId ? "✏️ تعديل وردية" : "📝 وردية جديدة"}</div>
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
           <div style={{ flex: "1 1 160px" }}>
-            <label style={smallLabel}>الفرع</label>
-            <select value={form.branch} onChange={(e) => set("branch", e.target.value)} disabled={!!lockedBranch} style={inputStyle2}>
+            <label style={smallLabel}>الفرع {cashierBranches && cashierBranches.length > 1 ? "(معيّن على أكتر من فرع — اختار اللي شغال فيه دلوقتي)" : ""}</label>
+            <select value={form.branch} onChange={(e) => set("branch", e.target.value)} disabled={branchSelectDisabled} style={inputStyle2}>
               {branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
           </div>
@@ -1596,7 +1605,7 @@ function SmartInsights({ rows }) {
 function ReportTab({ currentUser, meta, users, institutionName }) {
   const isCashier = currentUser.role === "cashier";
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
-  const lockedBranch = currentUser.role === "branch_manager" ? currentUser.branch : (isCashier ? currentUser.branch : null);
+  const lockedBranch = currentUser.role === "branch_manager" ? currentUser.branch : null; // الكاشير ممكن يشتغل في أكتر من فرع، تقريره بيتفلتر باسمه مش بفرع واحد
   const canSeeAllBranches = currentUser.role === "admin" || currentUser.role === "accountant";
 
   const [mode, setMode] = useState(isCashier ? "cashier" : "branch"); // "branch" | "cashier" | "section" | "tree"
@@ -1695,7 +1704,7 @@ function ReportTab({ currentUser, meta, users, institutionName }) {
 
   const branchOptions = ["الكل", ...meta.branches];
   const allCashierNames = useMemo(() => {
-    const fromUsers = users.filter((u) => u.role === "cashier" && (!lockedBranch || u.branch === lockedBranch)).map((u) => u.name);
+    const fromUsers = users.filter((u) => u.role === "cashier" && (!lockedBranch || userBranches(u).includes(lockedBranch))).map((u) => u.name);
     return ["الكل", ...Array.from(new Set(fromUsers))];
   }, [users, lockedBranch]);
 
@@ -2423,6 +2432,114 @@ function BarRow({ label, value, max, color }) {
   );
 }
 
+/* ============ محرك التحليل الذكي التلقائي للخزينة (إحصائي، يعمل محليًا بدون أي API خارجي) ============ */
+function TreasurySmartInsights({ kpi, expenseByCategory, dailyTrend, byTreasuryCompare, custodySummary, relevantCounts, treasuryId }) {
+  const items = useMemo(() => {
+    const list = [];
+
+    // 1) صافي التدفق النقدي العام
+    if (kpi.netFlow < 0) {
+      list.push({ kind: "warning", text: `صافي التدفق النقدي سالب (${fmt(kpi.netFlow)} ر.س) في هذه الفترة — المصروفات والسحوبات أكبر من الإيداعات، يستحق المتابعة.` });
+    } else if (kpi.netFlow > 0) {
+      list.push({ kind: "success", text: `صافي التدفق النقدي موجب (${fmt(kpi.netFlow)} ر.س) — الإيداعات أكبر من المصروفات في هذه الفترة.` });
+    }
+
+    // 2) فئة المصروفات المهيمنة (لو فئة واحدة بتاخد نسبة كبيرة جدًا من إجمالي المصروف)
+    const totalExpense = expenseByCategory.reduce((s, c) => s + c.value, 0);
+    if (totalExpense > 0 && expenseByCategory.length > 0) {
+      const top = expenseByCategory[0];
+      const pct = (top.value / totalExpense) * 100;
+      if (pct >= 50) {
+        list.push({ kind: "info", text: `فئة "${top.label}" بتستحوذ على ${pct.toFixed(0)}% من إجمالي المصروفات (${fmt(top.value)} ر.س) — تركّز غير معتاد يستاهل مراجعة.` });
+      }
+    }
+    const uncategorized = expenseByCategory.find((c) => c.label === "بدون تصنيف");
+    if (uncategorized && totalExpense > 0 && (uncategorized.value / totalExpense) > 0.3) {
+      list.push({ kind: "warning", text: `${((uncategorized.value / totalExpense) * 100).toFixed(0)}% من المصروفات "بدون تصنيف" (${fmt(uncategorized.value)} ر.س) — تصنيفها هيحسّن دقة أي تحليل مستقبلي.` });
+    }
+
+    // 3) رصد يوم شاذ في الاتجاه اليومي (صرف يوم واحد أعلى بكتير من المتوسط)
+    if (dailyTrend.length >= 4) {
+      const outAmounts = dailyTrend.map((d) => d.out);
+      const mean = outAmounts.reduce((s, v) => s + v, 0) / outAmounts.length;
+      const variance = outAmounts.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / outAmounts.length;
+      const stddev = Math.sqrt(variance);
+      const spikes = dailyTrend.filter((d) => stddev > 1 && d.out - mean > 1.5 * stddev && d.out > 0);
+      spikes.slice(0, 2).forEach((s) => {
+        list.push({ kind: "warning", text: `يوم ${s.date} فيه صرف أعلى من المعتاد بشكل ملحوظ (${fmt(s.out)} ر.س مقابل متوسط ${fmt(mean)} ر.س) — يستاهل مراجعة تفاصيله.` });
+      });
+    }
+
+    // 4) مقارنة الخزائن — خزينة برصيد سالب
+    byTreasuryCompare.forEach((t) => {
+      if (t.balance < 0) {
+        list.push({ kind: "warning", text: `خزينة "${t.name}" رصيدها سالب (${fmt(t.balance)} ر.س) — محتاجة توريد عاجل.` });
+      }
+    });
+
+    // 5) العهد/السلف القائمة زمنيًا كبيرة أو متعددة عند نفس الشخص
+    custodySummary.forEach((c) => {
+      if (c.remaining > 0 && c.count >= 3) {
+        list.push({ kind: "info", text: `"${c.name}" عليه ${c.count} عهد/سلف متفرقة بإجمالي متبقي ${fmt(c.remaining)} ر.س — يفضّل تجميعها وتسويتها.` });
+      }
+    });
+    const bigCustody = custodySummary.filter((c) => c.remaining > 1000).sort((a, b) => b.remaining - a.remaining)[0];
+    if (bigCustody) {
+      list.push({ kind: "warning", text: `أكبر عهدة/سلفة قائمة حاليًا عند "${bigCustody.name}" بمبلغ ${fmt(bigCustody.remaining)} ر.س.` });
+    }
+
+    // 6) فروق الجرد المتكررة (عجز متكرر في نفس الخزينة)
+    const countsByTreasury = {};
+    relevantCounts.forEach((c) => {
+      if (!countsByTreasury[c.treasuryId]) countsByTreasury[c.treasuryId] = [];
+      countsByTreasury[c.treasuryId].push(c);
+    });
+    Object.values(countsByTreasury).forEach((list2) => {
+      const deficits = list2.filter((c) => c.difference < -1);
+      if (deficits.length >= 2) {
+        list.push({ kind: "warning", text: `فيه عجز متكرر في عمليات الجرد لنفس الخزينة (${deficits.length} مرات) — نمط يستاهل تدقيق.` });
+      }
+    });
+
+    if (list.length === 0) {
+      list.push({ kind: "success", text: "لا توجد ملاحظات شاذة تستدعي القلق في هذه الفترة — الأداء المالي مستقر بوجه عام." });
+    }
+    return list;
+    // eslint-disable-next-line
+  }, [kpi, expenseByCategory, dailyTrend, byTreasuryCompare, custodySummary, relevantCounts]);
+
+  const KIND_STYLE = {
+    warning: { bg: "#fef2f2", border: "#fecaca", icon: "⚠️", color: "#991b1b" },
+    success: { bg: "#f0fdf4", border: "#bbf7d0", icon: "✅", color: "#166534" },
+    info: { bg: "#eff6ff", border: "#bfdbfe", icon: "ℹ️", color: "#1e40af" },
+  };
+
+  return (
+    <div style={{
+      background: "linear-gradient(135deg,#faf5ff,#f5f3ff)", border: "1px solid #ddd6fe", borderRadius: 14,
+      padding: 20, marginBottom: 18
+    }}>
+      <div style={{ fontWeight: 800, fontSize: 15, color: "#5b21b6", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+        🤖 تحليل ذكي تلقائي للخزينة
+      </div>
+      <div style={{ fontSize: 11.5, color: "#7c3aed", marginBottom: 14 }}>تحليل إحصائي فوري لحركة الخزينة في هذه الفترة — يعمل محليًا داخل التطبيق بدون أي اتصال خارجي</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map((it, i) => {
+          const s = KIND_STYLE[it.kind];
+          return (
+            <div key={i} style={{
+              background: s.bg, border: "1px solid " + s.border, borderRadius: 10, padding: "10px 13px",
+              fontSize: 13, color: s.color, display: "flex", gap: 8, lineHeight: 1.6
+            }}>
+              <span>{s.icon}</span><span>{it.text}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function TreasuryAnalysis({ treasuries, txs, custodies, cashCounts, institutionName }) {
   const [treasuryId, setTreasuryId] = useState("all");
   const [fromDate, setFromDate] = useState(firstDayOfMonth());
@@ -2559,6 +2676,12 @@ function TreasuryAnalysis({ treasuries, txs, custodies, cashCounts, institutionN
           <h2>{institutionName}</h2>
           <div>تحليل شامل للكاش — {scopeLabel} — من {fromDate} إلى {toDate}</div>
         </div>
+
+        <TreasurySmartInsights
+          kpi={kpi} expenseByCategory={expenseByCategory} dailyTrend={dailyTrend}
+          byTreasuryCompare={byTreasuryCompare} custodySummary={custodySummary} relevantCounts={relevantCounts}
+          treasuryId={treasuryId}
+        />
 
         <div style={cardStyle}>
           <div style={cardTitle}>📌 المؤشرات الرئيسية — {scopeLabel}</div>
@@ -4653,7 +4776,7 @@ function ShiftsSettings({ meta, institutionId }) {
   );
 }
 
-const emptyUser = { username: "", password: "", name: "", role: "cashier", branch: "" };
+const emptyUser = { username: "", password: "", name: "", role: "cashier", branch: "", branches: [] };
 const emptyBulkRow = () => ({ _rid: uid(), username: "", password: "", name: "", role: "cashier", branch: "" });
 
 /* ============ صلاحيات الأدوار: تحكم من الإعدادات في وصول كل دور لكل تبويب ============ */
@@ -4737,13 +4860,15 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
       seenNow.add(uname);
       toAdd.push({
         id: uid(), username: uname, password: r.password.trim(), name: r.name.trim(), role: r.role,
-        branch: (r.role === "branch_manager" || r.role === "cashier") ? r.branch : "", institutionId,
+        branch: r.role === "branch_manager" ? r.branch : "",
+        branches: r.role === "cashier" && r.branch ? [r.branch] : [],
+        institutionId,
       });
     }
     if (toAdd.length === 0) { setBulkMsg("كل أسماء المستخدمين المدخلة موجودة بالفعل"); return; }
     await USERS_DOC.set({ list: [...allUsers, ...toAdd] });
     setBulkRows([emptyBulkRow(), emptyBulkRow(), emptyBulkRow()]);
-    setBulkMsg("✅ تمت إضافة " + toAdd.length + " مستخدم بنجاح");
+    setBulkMsg("✅ تمت إضافة " + toAdd.length + " مستخدم بنجاح — لو الكاشير محتاج أكتر من فرع، عدّله من الجدول تحت وأضف باقي الفروع");
   }
 
   /* -------- تعديل مستخدم موجود -------- */
@@ -4755,19 +4880,23 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
 
   async function saveUser() {
     if (!form.username.trim() || !form.password.trim() || !form.name.trim()) { setMsg("من فضلك أكمل اسم المستخدم وكلمة المرور والاسم"); return; }
+    if (form.role === "cashier" && (!form.branches || form.branches.length === 0)) { setMsg("اختر فرع واحد على الأقل للكاشير"); return; }
+    const payload = { ...form };
+    if (form.role === "cashier") { payload.branch = ""; payload.branches = form.branches || []; }
+    else { payload.branches = []; }
     const list = allUsers.slice();
     if (editingId) {
       const idx = list.findIndex((u) => u.id === editingId);
-      if (idx > -1) list[idx] = { ...list[idx], ...form, institutionId };
+      if (idx > -1) list[idx] = { ...list[idx], ...payload, institutionId };
     } else {
-      if (list.some((u) => u.username === form.username.trim())) { setMsg("اسم المستخدم موجود بالفعل"); return; }
-      list.push({ id: uid(), ...form, institutionId });
+      if (list.some((u) => u.username === payload.username.trim())) { setMsg("اسم المستخدم موجود بالفعل"); return; }
+      list.push({ id: uid(), ...payload, institutionId });
     }
     await USERS_DOC.set({ list });
     setForm(emptyUser); setEditingId(null); setMsg("");
   }
   function editUser(u) {
-    setForm({ username: u.username, password: u.password, name: u.name, role: u.role, branch: u.branch || "" });
+    setForm({ username: u.username, password: u.password, name: u.name, role: u.role, branch: u.branch || "", branches: userBranches(u) });
     setEditingId(u.id);
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   }
@@ -4777,6 +4906,14 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
   }
 
   const needsBranch = form.role === "branch_manager" || form.role === "cashier";
+  const isCashierRole = form.role === "cashier";
+  function toggleFormBranch(b) {
+    setForm((f) => {
+      const cur = f.branches || [];
+      const next = cur.includes(b) ? cur.filter((x) => x !== b) : [...cur, b];
+      return { ...f, branches: next };
+    });
+  }
 
   return (
     <div>
@@ -4842,7 +4979,7 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
               <option value="custody_holder">أمين عهدة</option>
             </select>
           </div>
-          {needsBranch && (
+          {needsBranch && !isCashierRole && (
             <div style={{ flex: "1 1 150px" }}>
               <label style={smallLabel}>الفرع</label>
               <select value={form.branch} onChange={(e) => set("branch", e.target.value)} style={inputStyle2}>
@@ -4852,6 +4989,27 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
             </div>
           )}
         </div>
+        {isCashierRole && (
+          <div style={{ marginTop: 4, marginBottom: 14 }}>
+            <label style={smallLabel}>الفروع (الكاشير يقدر يشتغل في أكتر من فرع — اختار كل الفروع اللي هيشتغل فيها)</label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {meta.branches.map((b) => {
+                const checked = (form.branches || []).includes(b);
+                return (
+                  <label key={b} onClick={() => toggleFormBranch(b)} style={{
+                    display: "flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "6px 12px",
+                    borderRadius: 20, border: "1px solid " + (checked ? C.blue : C.border),
+                    background: checked ? C.blueSoft : "#fff", fontSize: 13, fontWeight: checked ? 700 : 400,
+                    color: checked ? C.blue : C.text
+                  }}>
+                    <input type="checkbox" checked={checked} readOnly style={{ pointerEvents: "none" }} />
+                    {b}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button onClick={saveUser} style={smallBtn}>{editingId ? "حفظ التعديل" : "إضافة مستخدم"}</button>
           {editingId && <button onClick={() => { setForm(emptyUser); setEditingId(null); }} style={ghostBtn}>إلغاء</button>}
@@ -4868,7 +5026,7 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
               {users.map((u) => (
                 <tr key={u.id}>
                   <td style={td}>{u.username}</td><td style={td}>{u.name}</td>
-                  <td style={td}>{ROLE_LABELS[u.role]}</td><td style={td}>{u.branch || "—"}</td>
+                  <td style={td}>{ROLE_LABELS[u.role]}</td><td style={td}>{userBranches(u).join("، ") || "—"}</td>
                   <td style={td}>
                     <span onClick={() => editUser(u)} style={{ cursor: "pointer", color: C.blue, marginLeft: 10 }}>تعديل</span>
                     <span onClick={() => removeUser(u.id)} style={{ cursor: "pointer", color: C.danger }}>حذف</span>
