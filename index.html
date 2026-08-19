@@ -105,6 +105,8 @@ const USERS_DOC = db.collection("cashRecon").doc("users");
 const TREASURIES_COL = db.collection("cashReconTreasuries");
 const TREASURY_TX_COL = db.collection("cashReconTreasuryTx");
 const CUSTODIES_COL = db.collection("cashReconCustodies");
+/* كل مصروف عهدة بيتخزن كمستند مستقل جوّه مجموعة فرعية تحت العهدة نفسها — يمنع تخطي حد حجم المستند (1 ميجا) لما تتجمع الصور */
+function custodyExpensesCol(custodyId) { return CUSTODIES_COL.doc(custodyId).collection("expenses"); }
 const CASH_COUNTS_COL = db.collection("cashReconCashCounts");
 const EMPLOYEES_COL = db.collection("cashReconEmployees");
 const EXPENSE_REQUESTS_COL = db.collection("cashReconExpenseRequests");
@@ -263,6 +265,7 @@ function AttachmentThumb({ url, fileType, size = 40, onRemove }) {
 function CustodyHolderTab({ currentUser, institutionName }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
   const [custodies, setCustodies] = useState(null);
+  const [expensesByCustody, setExpensesByCustody] = useState({});
   const [savingId, setSavingId] = useState(null);
   const [msg, setMsg] = useState("");
   const [forms, setForms] = useState({}); // { custodyId: { amount, description, date, photo } }
@@ -279,15 +282,29 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     return unsub;
   }, [currentUser.name, institutionId]);
 
+  // اشتراك في مصروفات كل عهدة على حدة — كل مصروف مستند منفصل فيمنع تخطي حد حجم المستند لما تتجمع الصور
+  useEffect(() => {
+    if (!custodies) return;
+    const unsubs = custodies.map((c) =>
+      custodyExpensesCol(c.id).onSnapshot((snap) => {
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        list.sort((a, b) => (a.enteredAt || 0) - (b.enteredAt || 0));
+        setExpensesByCustody((prev) => ({ ...prev, [c.id]: list }));
+      }, () => {})
+    );
+    return () => unsubs.forEach((u) => u());
+    // eslint-disable-next-line
+  }, [custodies && custodies.map((c) => c.id).join(",")]);
+
   function remainingOfficial(c) {
     const settled = (c.settlements || []).reduce((s, x) => s + (Number(x.cashReturned) || 0) + (Number(x.expensed) || 0), 0);
     return Math.max(0, (Number(c.amount) || 0) - settled);
   }
-  function loggedTotal(c) {
-    return (c.expenseLog || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  function loggedTotal(expenses) {
+    return (expenses || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
   }
-  function remainingByLog(c) {
-    return Math.max(0, (Number(c.amount) || 0) - loggedTotal(c));
+  function remainingByLog(c, expenses) {
+    return Math.max(0, (Number(c.amount) || 0) - loggedTotal(expenses));
   }
 
   function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", date: todayStr(), photo: null }; }
@@ -332,14 +349,14 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     if (!isImage && !isPdf) { setMsg("اختر صورة أو ملف PDF بس"); return; }
     try {
       if (isImage) {
-        let dataUrl = await compressImage(file, 1000, 0.6);
-        if (dataUrl.length > 700000) dataUrl = await compressImage(file, 700, 0.45);
-        if (dataUrl.length > 900000) { setMsg("الصورة كبيرة جدًا حتى بعد الضغط — جرّب صورة ثانية بزاوية أبعد"); return; }
+        let dataUrl = await compressImage(file, 900, 0.55);
+        if (dataUrl.length > 550000) dataUrl = await compressImage(file, 650, 0.4);
+        if (dataUrl.length > 700000) { setMsg("الصورة كبيرة جدًا حتى بعد الضغط — جرّب صورة ثانية بزاوية أبعد"); return; }
         setForm(custodyId, "photo", dataUrl);
         setForm(custodyId, "fileType", "image");
       } else {
         const dataUrl = await readFileAsDataURL(file);
-        if (dataUrl.length > 900000) { setMsg("ملف الـ PDF كبير جدًا (الحد الأقصى تقريبًا 650 كيلوبايت) — جرّب ملف أصغر أو حوّله لصورة"); return; }
+        if (dataUrl.length > 700000) { setMsg("ملف الـ PDF كبير جدًا (الحد الأقصى تقريبًا 500 كيلوبايت) — جرّب ملف أصغر أو حوّله لصورة"); return; }
         setForm(custodyId, "photo", dataUrl);
         setForm(custodyId, "fileType", "pdf");
       }
@@ -355,11 +372,11 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     setSavingId(c.id); setMsg("");
     try {
       const entry = {
-        id: uid(), amount: amt, description: f.description.trim(), supplierName: (f.supplierName || "").trim(),
-        date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null, enteredAt: Date.now(),
+        amount: amt, description: f.description.trim(), supplierName: (f.supplierName || "").trim(),
+        date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null,
+        enteredAt: Date.now(), enteredBy: currentUser.name,
       };
-      const updated = [...(c.expenseLog || []), entry];
-      await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
+      await custodyExpensesCol(c.id).add(entry);
       await NOTIF_COL.add({
         type: "custody_expense", custodyId: c.id, employeeName: currentUser.name, amount: amt,
         date: f.date, branch: null, institutionId,
@@ -374,14 +391,12 @@ function CustodyHolderTab({ currentUser, institutionName }) {
 
   async function deleteExpense(c, entryId) {
     if (!confirm("تحذف هذا المصروف من تسجيلك؟")) return;
-    const updated = (c.expenseLog || []).filter((e) => e.id !== entryId);
-    await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
+    await custodyExpensesCol(c.id).doc(entryId).delete();
   }
 
   async function removeAttachment(c, entryId) {
     if (!confirm("تحذف المرفق (الصورة/PDF) من هذا المصروف؟ المصروف نفسه هيفضل زي ما هو.")) return;
-    const updated = (c.expenseLog || []).map((e) => e.id === entryId ? { ...e, photoUrl: null, fileType: null } : e);
-    await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
+    await custodyExpensesCol(c.id).doc(entryId).update({ photoUrl: null, fileType: null });
   }
 
   function doPrint() { window.print(); }
@@ -393,9 +408,9 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   const reportCustody = reportId ? custodies.find((c) => c.id === reportId) : null;
 
   if (reportCustody) {
-    const log = reportCustody.expenseLog || [];
-    const total = loggedTotal(reportCustody);
-    const rem = remainingByLog(reportCustody);
+    const log = expensesByCustody[reportCustody.id] || [];
+    const total = loggedTotal(log);
+    const rem = remainingByLog(reportCustody, log);
 
     // بناء كشف الحساب: صف افتتاحي (استلام العهدة) + كل مصروف مرتّب زمنيًا، مع رصيد متبقي بعد كل حركة
     const sortedLog = [...log].sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.enteredAt || 0) - (b.enteredAt || 0));
@@ -497,9 +512,9 @@ function CustodyHolderTab({ currentUser, institutionName }) {
 
       {active.map((c) => {
         const remOfficial = remainingOfficial(c);
-        const total = loggedTotal(c);
-        const remLog = remainingByLog(c);
-        const log = c.expenseLog || [];
+        const log = expensesByCustody[c.id] || [];
+        const total = loggedTotal(log);
+        const remLog = remainingByLog(c, log);
         const oldReceipts = c.receipts || [];
         const f = getForm(c.id);
         return (
@@ -3378,6 +3393,7 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
   const [expensed, setExpensed] = useState("");
   const [note, setNote] = useState("");
   const [msg, setMsg] = useState("");
+  const [expenseLogs, setExpenseLogs] = useState({}); // { custodyId: [...expenses] }
 
   function remainingOf(c) {
     const settled = (c.settlements || []).reduce((s, x) => s + (Number(x.cashReturned) || 0) + (Number(x.expensed) || 0), 0);
@@ -3394,10 +3410,20 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
 
   const filtered = custodies.filter((c) => filterStatus === "all" || statusOf(c) === filterStatus);
 
-  async function removeAttachment(c, entryId) {
+  // تحميل مصروفات العهدة (من مجموعتها الفرعية) عند فتح مراجعتها فقط — تحميل عند الطلب مش لكل العهد دفعة واحدة
+  useEffect(() => {
+    if (!settlingId) return;
+    const unsub = custodyExpensesCol(settlingId).onSnapshot((snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (a.enteredAt || 0) - (b.enteredAt || 0));
+      setExpenseLogs((prev) => ({ ...prev, [settlingId]: list }));
+    });
+    return unsub;
+  }, [settlingId]);
+
+  async function removeAttachment(custodyId, entryId) {
     if (!confirm("تحذف هذا المرفق (الصورة/PDF) بعد مراجعته؟")) return;
-    const updated = (c.expenseLog || []).map((e) => e.id === entryId ? { ...e, photoUrl: null, fileType: null } : e);
-    await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
+    await custodyExpensesCol(custodyId).doc(entryId).update({ photoUrl: null, fileType: null });
   }
 
   async function submitSettlement(c) {
@@ -3461,29 +3487,32 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                   {settlingId === c.id && (
                     <tr>
                       <td colSpan={9} style={{ background: C.blueSoft, padding: 14 }}>
-                        {(c.expenseLog || []).length > 0 && (
-                          <div style={{ marginBottom: 14 }}>
-                            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>
-                              📋 المصروفات اللي سجّلها الموظف بنفسه ({c.expenseLog.length}) — إجمالي: {fmt(c.expenseLog.reduce((s, x) => s + (Number(x.amount) || 0), 0))}
+                        {(() => {
+                          const custodyLog = expenseLogs[c.id] || [];
+                          return custodyLog.length > 0 ? (
+                            <div style={{ marginBottom: 14 }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>
+                                📋 المصروفات اللي سجّلها الموظف بنفسه ({custodyLog.length}) — إجمالي: {fmt(custodyLog.reduce((s, x) => s + (Number(x.amount) || 0), 0))}
+                              </div>
+                              <div style={{ overflowX: "auto" }}>
+                                <table style={tblStyle}>
+                                  <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th></tr></thead>
+                                  <tbody>
+                                    {custodyLog.map((e) => (
+                                      <tr key={e.id}>
+                                        <td style={td}>{e.date}</td>
+                                        <td style={td}>{e.supplierName || "—"}</td>
+                                        <td style={td}>{e.description}</td>
+                                        <td style={td}>{fmt(e.amount)}</td>
+                                        <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={44} onRemove={e.photoUrl ? () => removeAttachment(c.id, e.id) : null} /></td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
-                            <div style={{ overflowX: "auto" }}>
-                              <table style={tblStyle}>
-                                <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th></tr></thead>
-                                <tbody>
-                                  {c.expenseLog.map((e) => (
-                                    <tr key={e.id}>
-                                      <td style={td}>{e.date}</td>
-                                      <td style={td}>{e.supplierName || "—"}</td>
-                                      <td style={td}>{e.description}</td>
-                                      <td style={td}>{fmt(e.amount)}</td>
-                                      <td style={td}><AttachmentThumb url={e.photoUrl} fileType={e.fileType} size={44} onRemove={e.photoUrl ? () => removeAttachment(c, e.id) : null} /></td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        )}
+                          ) : <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>ما فيه مصروفات مسجّلة من الموظف بعد.</div>;
+                        })()}
                         {(c.receipts || []).length > 0 && (
                           <div style={{ marginBottom: 14 }}>
                             <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>📷 فواتير قديمة رفعها الموظف ({c.receipts.length})</div>
