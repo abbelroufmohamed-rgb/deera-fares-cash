@@ -2349,7 +2349,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
       {sub === "count" && <TreasuryCashCount currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
       {sub === "custody" && <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} />}
       {sub === "vouchers" && <TreasuryVouchers currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
-      {sub === "approvals" && <TreasuryApprovals currentUser={currentUser} treasuries={treasuries} institutionId={institutionId} />}
+      {sub === "approvals" && <TreasuryApprovals currentUser={currentUser} treasuries={treasuries} institutionId={institutionId} institutionName={institutionName} />}
       {sub === "manage" && <TreasuryManage treasuries={treasuries} institutionId={institutionId} />}
     </div>
   );
@@ -4215,13 +4215,14 @@ function VoucherPrintView({ voucher, treasuries, onPrint, onClose, institutionNa
 }
 
 /* ============ اعتماد طلبات الصرف (مدير مالي/أدمن) ============ */
-function TreasuryApprovals({ currentUser, treasuries, institutionId }) {
+function TreasuryApprovals({ currentUser, treasuries, institutionId, institutionName }) {
   const [requests, setRequests] = useState([]);
   const [filterStatus, setFilterStatus] = useState("pending");
   const [reviewingId, setReviewingId] = useState(null);
   const [reviewNote, setReviewNote] = useState("");
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState("");
+  const [approvedVoucher, setApprovedVoucher] = useState(null);
 
   useEffect(() => {
     const unsub = EXPENSE_REQUESTS_COL.orderBy("createdAt", "desc").limit(200).onSnapshot((snap) => {
@@ -4238,19 +4239,23 @@ function TreasuryApprovals({ currentUser, treasuries, institutionId }) {
   async function approve(r) {
     setBusy(r.id); setMsg("");
     try {
-      const txRef = await TREASURY_TX_COL.add({
+      const txPayload = {
         treasuryId: r.treasuryId, type: "expense", amount: r.amount, date: r.date,
         description: r.description + " (طلب صرف #" + r.id.slice(0, 6) + " — مقدَّم من " + r.requestedBy + ")",
         category: r.category || "", institutionId,
         enteredBy: currentUser.name, enteredByRole: currentUser.role,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+      const txRef = await TREASURY_TX_COL.add(txPayload);
       await EXPENSE_REQUESTS_COL.doc(r.id).update({
         status: "approved", reviewedBy: currentUser.name, reviewedAt: firebase.firestore.FieldValue.serverTimestamp(),
         reviewNote: reviewNote || "", txId: txRef.id,
       });
       setReviewingId(null); setReviewNote("");
-      setMsg("✅ تم اعتماد الطلب وتنفيذ الصرف في الخزينة");
+      setMsg("✅ تم اعتماد الطلب وتنفيذ الصرف في الخزينة — السند جاهز تحت للطباعة");
+      // نجهّز رقم السند فورًا ونعرضه جاهز للطباعة/تحميل PDF من غير ما يدوّر عليه في مكان تاني
+      const voucherNo = await assignVoucherNoIfMissing({ id: txRef.id, type: "expense" }, institutionId);
+      setApprovedVoucher({ id: txRef.id, ...txPayload, voucherNo });
     } catch (e) { setMsg("خطأ: " + e.message); }
     setBusy(null);
   }
@@ -4268,6 +4273,8 @@ function TreasuryApprovals({ currentUser, treasuries, institutionId }) {
     } catch (e) { setMsg("خطأ: " + e.message); }
     setBusy(null);
   }
+
+  function doPrint() { window.print(); }
 
   return (
     <div>
@@ -4325,6 +4332,10 @@ function TreasuryApprovals({ currentUser, treasuries, institutionId }) {
           </table>
         </div>
       </div>
+
+      {approvedVoucher && (
+        <VoucherPrintView voucher={approvedVoucher} treasuries={treasuries} onPrint={doPrint} onClose={() => setApprovedVoucher(null)} institutionName={institutionName} />
+      )}
     </div>
   );
 }
