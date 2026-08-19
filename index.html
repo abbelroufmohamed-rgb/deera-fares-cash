@@ -3801,6 +3801,23 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                             </div>
                           </div>
                         )}
+                        {canSettle && (expenseLogs[c.id] || []).length > 0 && (
+                          <div style={{ marginBottom: 12 }}>
+                            <button
+                              onClick={() => {
+                                const loggedTotal = (expenseLogs[c.id] || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+                                const capped = Math.min(loggedTotal, remainingOf(c));
+                                setExpensed(capped.toFixed(2));
+                                setCashReturned("");
+                                setNote("قبول المصروفات المسجّلة من الموظف بعد مراجعة الفواتير");
+                              }}
+                              style={ghostBtn}
+                            >
+                              ✅ قبول كل المصروفات المسجّلة كمصروف بإيصالات ({fmt((expenseLogs[c.id] || []).reduce((s, x) => s + (Number(x.amount) || 0), 0))} ر.س)
+                            </button>
+                            <span style={{ fontSize: 11, color: C.muted, marginRight: 10 }}>بيملأ خانة "مبلغ محوّل لمصروف" تلقائيًا — راجع الفواتير فوق الأول، وبعدين اضغط "حفظ التسوية"</span>
+                          </div>
+                        )}
                         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
                           {canSettle ? (
                             <>
