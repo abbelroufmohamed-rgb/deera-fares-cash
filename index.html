@@ -940,7 +940,9 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
           ))}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-          <NotificationBell currentUser={currentUser} setTab={setTab} />
+          {(currentUser.role === "admin" || currentUser.role === "accountant") && (
+            <NotificationBell currentUser={currentUser} setTab={setTab} />
+          )}
           <span style={{ background: "rgba(255,255,255,0.12)", padding: "6px 12px", borderRadius: 20 }}>
             {currentUser.name} · {ROLE_LABELS[currentUser.role]}{currentUser.branch ? " · " + currentUser.branch : ""}
           </span>
