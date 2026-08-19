@@ -3603,6 +3603,8 @@ function TreasuryLedger({ treasuries, txs, institutionName }) {
 function TreasuryCustody({ currentUser, treasuries, custodies }) {
   const canSettle = currentUser.role === "admin" || currentUser.role === "financial_manager";
   const [filterStatus, setFilterStatus] = useState("all");
+  const [filterKind, setFilterKind] = useState("all"); // "all" | "custody" | "advance"
+  const [searchName, setSearchName] = useState("");
   const [settlingId, setSettlingId] = useState(null);
   const [cashReturned, setCashReturned] = useState("");
   const [expensed, setExpensed] = useState("");
@@ -3623,7 +3625,31 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
   const STATUS_LABEL = { settled: "مسددة بالكامل", partial: "مسددة جزئيًا", outstanding: "قائمة" };
   const STATUS_COLOR = { settled: C.success, partial: "#d97706", outstanding: C.danger };
 
-  const filtered = custodies.filter((c) => filterStatus === "all" || statusOf(c) === filterStatus);
+  const filtered = custodies.filter((c) => {
+    if (filterStatus !== "all" && statusOf(c) !== filterStatus) return false;
+    if (filterKind === "advance" && c.kind !== "advance") return false;
+    if (filterKind === "custody" && c.kind === "advance") return false;
+    if (searchName.trim() && !(c.employeeName || "").toLowerCase().includes(searchName.trim().toLowerCase())) return false;
+    return true;
+  });
+
+  // لما تبحث باسم موظف معيّن، وريه ملخّص فوري: إجمالي المتبقي عليه من كل عهده وسلفه (بغض النظر عن فلتر الحالة/النوع)
+  const searchedEmployeeSummary = useMemo(() => {
+    const term = searchName.trim().toLowerCase();
+    if (!term) return null;
+    const matches = custodies.filter((c) => (c.employeeName || "").toLowerCase().includes(term));
+    if (matches.length === 0) return null;
+    const byName = {};
+    matches.forEach((c) => {
+      const key = c.employeeName;
+      if (!byName[key]) byName[key] = { name: key, count: 0, remaining: 0, totalReceived: 0 };
+      byName[key].count += 1;
+      byName[key].remaining += remainingOf(c);
+      byName[key].totalReceived += Number(c.amount) || 0;
+    });
+    return Object.values(byName);
+    // eslint-disable-next-line
+  }, [searchName, custodies]);
 
   // تحميل مصروفات العهدة (من مجموعتها الفرعية) عند فتح مراجعتها فقط — تحميل عند الطلب مش لكل العهد دفعة واحدة
   useEffect(() => {
@@ -3667,6 +3693,36 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
   return (
     <div style={cardStyle}>
       <div style={cardTitle}>🧍 عهد الموظفين</div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ flex: "1 1 220px" }}>
+          <label style={smallLabel}>بحث باسم الموظف</label>
+          <input value={searchName} onChange={(e) => setSearchName(e.target.value)} style={inputStyle2} placeholder="اكتب اسم الموظف..." />
+        </div>
+        <div>
+          <label style={smallLabel}>النوع</label>
+          <select value={filterKind} onChange={(e) => setFilterKind(e.target.value)} style={inputStyle2}>
+            <option value="all">الكل (عهدة وسلفة)</option>
+            <option value="custody">عهدة بس</option>
+            <option value="advance">سلفة بس</option>
+          </select>
+        </div>
+      </div>
+
+      {searchedEmployeeSummary && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          {searchedEmployeeSummary.map((s) => (
+            <div key={s.name} style={{
+              flex: "1 1 220px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "12px 15px"
+            }}>
+              <div style={{ fontSize: 12, color: "#dbe6ff", marginBottom: 4 }}>المتبقي على "{s.name}" حاليًا ({s.count} عهدة/سلفة)</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>{fmt(s.remaining)} ر.س</div>
+              <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 2 }}>من إجمالي مستلم {fmt(s.totalReceived)} ر.س</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {[["all", "الكل"], ["outstanding", "قائمة"], ["partial", "جزئية"], ["settled", "مسددة"]].map(([k, l]) => (
           <button key={k} onClick={() => setFilterStatus(k)} style={filterStatus === k ? smallBtn : ghostBtn}>{l}</button>
