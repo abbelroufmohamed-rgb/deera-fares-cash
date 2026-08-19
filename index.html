@@ -5006,13 +5006,13 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
               {meta.branches.map((b) => {
                 const checked = (form.branches || []).includes(b);
                 return (
-                  <label key={b} onClick={() => toggleFormBranch(b)} style={{
+                  <label key={b} style={{
                     display: "flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "6px 12px",
                     borderRadius: 20, border: "1px solid " + (checked ? C.blue : C.border),
                     background: checked ? C.blueSoft : "#fff", fontSize: 13, fontWeight: checked ? 700 : 400,
                     color: checked ? C.blue : C.text
                   }}>
-                    <input type="checkbox" checked={checked} readOnly style={{ pointerEvents: "none" }} />
+                    <input type="checkbox" checked={checked} onChange={() => toggleFormBranch(b)} />
                     {b}
                   </label>
                 );
