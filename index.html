@@ -3912,11 +3912,12 @@ function TreasuryVouchers({ currentUser, treasuries, txs, institutionName, insti
 
   async function openVoucher(t) {
     setLoadingVoucherId(t.id);
+    setActionMsg("");
     try {
       const voucherNo = await assignVoucherNoIfMissing(t, institutionId);
       setSelected({ ...t, voucherNo });
     } catch (e) {
-      alert("تعذر تجهيز السند: " + e.message);
+      setActionMsg("⚠️ تعذر تجهيز السند: " + e.message);
     }
     setLoadingVoucherId(null);
   }
