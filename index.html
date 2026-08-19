@@ -341,6 +341,12 @@ function CustodyHolderTab({ currentUser, institutionName }) {
       };
       const updated = [...(c.expenseLog || []), entry];
       await CUSTODIES_COL.doc(c.id).update({ expenseLog: updated });
+      await NOTIF_COL.add({
+        type: "custody_expense", custodyId: c.id, employeeName: currentUser.name, amount: amt,
+        date: f.date, branch: null, institutionId,
+        message: `${currentUser.name} سجّل مصروف عهدة بقيمة ${fmt(amt)} ر.س` + (f.supplierName ? ` — ${f.supplierName}` : "") + (entry.photoUrl ? " (مرفق إثبات)" : ""),
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(), readBy: [],
+      }).catch(() => {});
       setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", date: todayStr(), photo: null, fileType: null } }));
       setMsg("✅ تم تسجيل المصروف بنجاح");
     } catch (e) { setMsg("خطأ: " + e.message); }
@@ -843,6 +849,7 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
     { id: "entry", icon: "entry", label: "تسجيل وردية", roles: ["admin", "accountant", "branch_manager", "cashier"] },
     { id: "report", icon: "report", label: "التقارير", roles: ["admin", "accountant", "branch_manager", "cashier"] },
     { id: "expenseRequest", icon: "send", label: "طلب صرف", roles: ["admin", "financial_manager", "accountant", "branch_manager"] },
+    { id: "custodyReview", icon: "bank", label: "عهد الموظفين", roles: ["accountant"] },
     { id: "treasury", icon: "bank", label: "الخزينة", roles: ["admin", "financial_manager"] },
     { id: "settings", icon: "settings", label: "الإعدادات", roles: ["admin"] },
     { id: "myCustody", icon: "bank", label: "عهدتي", roles: ["custody_holder"] },
@@ -889,6 +896,9 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
         {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "expenseRequest" && (
           <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} />
+        )}
+        {tab === "custodyReview" && currentUser.role === "accountant" && (
+          <CustodyReviewTab currentUser={currentUser} />
         )}
         {tab === "treasury" && (currentUser.role === "admin" || currentUser.role === "financial_manager") && (
           <TreasuryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />
@@ -1987,6 +1997,36 @@ function computeTreasuryBalance(treasury, txs) {
 /* ============ طلب صرف (يحتاج موافقة المدير المالي) ============ */
 const REQUEST_STATUS_LABEL = { pending: "قيد المراجعة", approved: "تمت الموافقة والصرف", rejected: "مرفوض" };
 const REQUEST_STATUS_COLOR = { pending: "#d97706", approved: "#15803d", rejected: "#b91c1c" };
+
+/* ============ عهد الموظفين — وصول محدود للمحاسب (بدون صلاحية التسوية المالية) ============ */
+function CustodyReviewTab({ currentUser }) {
+  const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
+  const [treasuries, setTreasuries] = useState(null);
+  const [custodies, setCustodies] = useState([]);
+
+  useEffect(() => {
+    const unsub = TREASURIES_COL.onSnapshot((snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((t) => (t.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setTreasuries(list);
+    });
+    return unsub;
+  }, [institutionId]);
+
+  useEffect(() => {
+    if (!treasuries) return;
+    const treasuryIdSet = new Set(treasuries.map((t) => t.id));
+    const unsub = CUSTODIES_COL.orderBy("createdAt", "desc").limit(500).onSnapshot((snap) => {
+      const data = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((c) => treasuryIdSet.has(c.treasuryId));
+      setCustodies(data);
+    });
+    return unsub;
+    // eslint-disable-next-line
+  }, [treasuries]);
+
+  if (treasuries === null) return <div style={{ color: C.muted, padding: 20 }}>جارِ التحميل...</div>;
+
+  return <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} />;
+}
 
 function ExpenseRequestTab({ currentUser, institutionName }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
@@ -3280,6 +3320,7 @@ function TreasuryLedger({ treasuries, txs, institutionName }) {
 }
 
 function TreasuryCustody({ currentUser, treasuries, custodies }) {
+  const canSettle = currentUser.role === "admin" || currentUser.role === "financial_manager";
   const [filterStatus, setFilterStatus] = useState("all");
   const [settlingId, setSettlingId] = useState(null);
   const [cashReturned, setCashReturned] = useState("");
@@ -3359,9 +3400,9 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                     <td style={{ ...td, fontWeight: 700, color: rem > 0 ? C.danger : C.success }}>{fmt(rem)}</td>
                     <td style={{ ...td, color: STATUS_COLOR[status], fontWeight: 700 }}>{STATUS_LABEL[status]}</td>
                     <td style={td}>
-                      {rem > 0 && (
+                      {(rem > 0 || !canSettle) && (
                         <span onClick={() => { setSettlingId(settlingId === c.id ? null : c.id); setMsg(""); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>
-                          {settlingId === c.id ? "إغلاق" : "تسوية"}
+                          {settlingId === c.id ? "إغلاق" : (canSettle ? "تسوية" : "مراجعة")}
                         </span>
                       )}
                     </td>
@@ -3405,10 +3446,16 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
                           </div>
                         )}
                         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-                          <div><label style={smallLabel}>مبلغ مرتجع نقدي</label><input type="number" step="0.01" value={cashReturned} onChange={(e) => setCashReturned(e.target.value)} style={{ ...inputStyle2, width: 140 }} /></div>
-                          <div><label style={smallLabel}>مبلغ محوّل لمصروف (بإيصالات)</label><input type="number" step="0.01" value={expensed} onChange={(e) => setExpensed(e.target.value)} style={{ ...inputStyle2, width: 160 }} /></div>
-                          <div style={{ flex: "1 1 200px" }}><label style={smallLabel}>ملاحظة</label><input value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle2} /></div>
-                          <button onClick={() => submitSettlement(c)} style={smallBtn}>حفظ التسوية</button>
+                          {canSettle ? (
+                            <>
+                              <div><label style={smallLabel}>مبلغ مرتجع نقدي</label><input type="number" step="0.01" value={cashReturned} onChange={(e) => setCashReturned(e.target.value)} style={{ ...inputStyle2, width: 140 }} /></div>
+                              <div><label style={smallLabel}>مبلغ محوّل لمصروف (بإيصالات)</label><input type="number" step="0.01" value={expensed} onChange={(e) => setExpensed(e.target.value)} style={{ ...inputStyle2, width: 160 }} /></div>
+                              <div style={{ flex: "1 1 200px" }}><label style={smallLabel}>ملاحظة</label><input value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle2} /></div>
+                              <button onClick={() => submitSettlement(c)} style={smallBtn}>حفظ التسوية</button>
+                            </>
+                          ) : (
+                            <div style={{ fontSize: 12, color: C.muted }}>تسوية العهدة (المبلغ المرتجع نقدي/مصروف) متاحة للأدمن والمدير المالي بس — إنت تقدر تراجع الفواتير والمصروفات وتعدّل/تحذف المرفقات.</div>
+                          )}
                         </div>
                         {(c.settlements || []).length > 0 && (
                           <div style={{ marginTop: 10, fontSize: 12, color: C.muted }}>
