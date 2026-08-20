@@ -180,6 +180,25 @@ function userBranches(u) {
   if (u.branch) return [u.branch];
   return [];
 }
+/* تجهيز رقم الجوال لصيغة واتساب الدولية (السعودية افتراضيًا لو الرقم بادئ بصفر) */
+function toWhatsAppNumber(phone) {
+  if (!phone) return null;
+  let digits = String(phone).replace(/[^\d]/g, "");
+  if (!digits) return null;
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  else if (digits.startsWith("0")) digits = "966" + digits.slice(1);
+  else if (!digits.startsWith("966") && digits.length <= 10) digits = "966" + digits;
+  return digits;
+}
+function whatsappLink(phone, message) {
+  const num = toWhatsAppNumber(phone);
+  if (!num) return null;
+  return "https://wa.me/" + num + "?text=" + encodeURIComponent(message);
+}
+function findUserPhoneByName(users, name) {
+  const u = (users || []).find((x) => x.name === name && x.phone);
+  return u ? u.phone : null;
+}
 function fmt(n) {
   const v = Number(n) || 0;
   return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -207,20 +226,22 @@ function computeShift(s) {
   const mada = num(s.mada);
   const visa = num(s.visa);
   const madaFoodics = num(s.madaFoodics);
+  const networkRefund = num(s.networkRefund); // استرجاع مدى فودكس (الشبكة) — بنفس منطق استرجاع الكاش
 
   const afterRefund = foodicsCash - refund;
+  const madaFoodicsAfterRefund = madaFoodics - networkRefund;
   const realAmount = collection + purchases + withdrawals;
   const actualShortage = realAmount - afterRefund;
 
   const balanceTotal = transfer + gulfNetwork + amex + mastercard + mada + visa;
-  const networkDiff = balanceTotal - madaFoodics;
+  const networkDiff = balanceTotal - madaFoodicsAfterRefund;
 
   const totalCollection = realAmount + balanceTotal;
-  const totalFoodicsSales = foodicsCash + madaFoodics;
+  const totalFoodicsSales = afterRefund + madaFoodicsAfterRefund;
   const totalShortage = totalCollection - totalFoodicsSales;
 
   return {
-    afterRefund, realAmount, actualShortage,
+    afterRefund, madaFoodicsAfterRefund, realAmount, actualShortage,
     balanceTotal, networkDiff,
     totalCollection, totalFoodicsSales, totalShortage,
   };
@@ -961,7 +982,7 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
           <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} />
         )}
         {tab === "custodyReview" && (effectivePerms.custodyReview || []).includes(currentUser.role) && (
-          <CustodyReviewTab currentUser={currentUser} />
+          <CustodyReviewTab currentUser={currentUser} users={institutionUsers} />
         )}
         {tab === "treasury" && (effectivePerms.treasury || []).includes(currentUser.role) && (
           <TreasuryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />
@@ -1098,6 +1119,7 @@ const FIELD_GROUPS = [
       { key: "gulfNetwork", label: "الشبكة الخليجية", type: "number" },
       { key: "transfer", label: "تحويل بنكي", type: "number" },
       { key: "madaFoodics", label: "مدى فودكس (تقرير النظام)", type: "number" },
+      { key: "networkRefund", label: "استرجاع مدى فودكس (الشبكة)", type: "number" },
   ]},
 ];
 
@@ -1105,7 +1127,7 @@ const emptyShift = {
   branch: "", shiftLabel: "", date: "", receiptNo: "", cashierName: "",
   collection: "", purchases: "", withdrawals: "", note: "",
   foodicsCash: "", refund: "",
-  mada: "", visa: "", mastercard: "", amex: "", gulfNetwork: "", transfer: "", madaFoodics: "",
+  mada: "", visa: "", mastercard: "", amex: "", gulfNetwork: "", transfer: "", madaFoodics: "", networkRefund: "",
 };
 
 /* ============ منطق الإشعارات: عجز/زيادة أعلى من الحد المسموح ============ */
@@ -1450,7 +1472,8 @@ function EntryTab({ currentUser, meta, users }) {
 function SummaryGrid({ calc }) {
   const items = [
     { label: "المبلغ الحقيقي (كاش)", val: calc.realAmount },
-    { label: "المبلغ بعد الاسترجاع (فودكس)", val: calc.afterRefund },
+    { label: "المبلغ بعد الاسترجاع (فودكس كاش)", val: calc.afterRefund },
+    { label: "مدى فودكس بعد الاسترجاع", val: calc.madaFoodicsAfterRefund },
     { label: "العجز/الزيادة الفعلي (كاش)", val: calc.actualShortage, highlight: true },
     { label: "إجمالي الموازنة (شبكة)", val: calc.balanceTotal },
     { label: "الفرق (شبكة مقابل فودكس)", val: calc.networkDiff, highlight: true },
@@ -2112,7 +2135,7 @@ const REQUEST_STATUS_LABEL = { pending: "قيد المراجعة", approved: "ت
 const REQUEST_STATUS_COLOR = { pending: "#d97706", approved: "#15803d", rejected: "#b91c1c" };
 
 /* ============ عهد الموظفين — وصول محدود للمحاسب (بدون صلاحية التسوية المالية) ============ */
-function CustodyReviewTab({ currentUser }) {
+function CustodyReviewTab({ currentUser, users }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
   const [treasuries, setTreasuries] = useState(null);
   const [custodies, setCustodies] = useState([]);
@@ -2138,7 +2161,7 @@ function CustodyReviewTab({ currentUser }) {
 
   if (treasuries === null) return <div style={{ color: C.muted, padding: 20 }}>جارِ التحميل...</div>;
 
-  return <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} />;
+  return <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} />;
 }
 
 function ExpenseRequestTab({ currentUser, institutionName }) {
@@ -2348,7 +2371,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
           <button key={s.id} onClick={() => setSub(s.id)} style={sub === s.id ? smallBtn : ghostBtn}>{s.label}</button>
         ))}
       </div>
-      {sub === "overview" && <TreasuryOverview treasuries={treasuries} txs={txs} custodies={custodies} />}
+      {sub === "overview" && <TreasuryOverview treasuries={treasuries} txs={txs} custodies={custodies} users={users} />}
       {sub === "analysis" && <TreasuryAnalysis treasuries={treasuries} txs={txs} custodies={custodies} cashCounts={cashCounts} institutionName={institutionName} />}
       {sub === "newTx" && <TreasuryNewTx currentUser={currentUser} treasuries={treasuries} users={users} institutionId={institutionId} institutionName={institutionName} />}
       {sub === "payroll" && (
@@ -2359,7 +2382,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
       )}
       {sub === "ledger" && <TreasuryLedger treasuries={treasuries} txs={txs} institutionName={institutionName} />}
       {sub === "count" && <TreasuryCashCount currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
-      {sub === "custody" && <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} />}
+      {sub === "custody" && <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} />}
       {sub === "vouchers" && <TreasuryVouchers currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
       {sub === "approvals" && <TreasuryApprovals currentUser={currentUser} treasuries={treasuries} institutionId={institutionId} institutionName={institutionName} />}
       {sub === "manage" && <TreasuryManage treasuries={treasuries} institutionId={institutionId} />}
@@ -2367,7 +2390,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
   );
 }
 
-function TreasuryOverview({ treasuries, txs, custodies }) {
+function TreasuryOverview({ treasuries, txs, custodies, users }) {
   const [showZero, setShowZero] = useState(false);
   const outstandingCustody = useMemo(() => {
     let total = 0;
@@ -2426,17 +2449,29 @@ function TreasuryOverview({ treasuries, txs, custodies }) {
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }} className="no-print">كل موظف عنده عهدة/سلفة، كم استلم إجمالًا وكم متبقي عليه — من غير ما تحتاج تفتح تفاصيله لوحده.</div>
           <div style={{ overflowX: "auto" }}>
             <table style={tblStyle}>
-              <thead><tr><th style={th}>الموظف</th><th style={th}>عدد العهد</th><th style={th}>إجمالي المستلم</th><th style={th}>إجمالي المسدد</th><th style={th}>المتبقي عليه</th></tr></thead>
+              <thead><tr><th style={th}>الموظف</th><th style={th}>عدد العهد</th><th style={th}>إجمالي المستلم</th><th style={th}>إجمالي المسدد</th><th style={th}>المتبقي عليه</th><th style={th} className="no-print"></th></tr></thead>
               <tbody>
-                {employeeSummary.map((e) => (
-                  <tr key={e.name}>
-                    <td style={{ ...td, fontWeight: 700 }}>{e.name}</td>
-                    <td style={td}>{e.count}</td>
-                    <td style={td}>{fmt(e.totalReceived)}</td>
-                    <td style={{ ...td, color: C.success }}>{fmt(e.totalSettled)}</td>
-                    <td style={{ ...td, fontWeight: 800, color: e.remaining > 0 ? C.danger : C.success }}>{fmt(e.remaining)}</td>
-                  </tr>
-                ))}
+                {employeeSummary.map((e) => {
+                  const phone = findUserPhoneByName(users, e.name);
+                  const link = e.remaining > 0 && phone ? whatsappLink(phone, `مرحبًا ${e.name}،\nتذكير بخصوص العهدة/السلفة القائمة عليك بمبلغ ${fmt(e.remaining)} ر.س.\nالرجاء المبادرة بالتسوية أو تسجيل مصروفاتها في التطبيق.\nشكرًا لك.`) : null;
+                  return (
+                    <tr key={e.name}>
+                      <td style={{ ...td, fontWeight: 700 }}>{e.name}</td>
+                      <td style={td}>{e.count}</td>
+                      <td style={td}>{fmt(e.totalReceived)}</td>
+                      <td style={{ ...td, color: C.success }}>{fmt(e.totalSettled)}</td>
+                      <td style={{ ...td, fontWeight: 800, color: e.remaining > 0 ? C.danger : C.success }}>{fmt(e.remaining)}</td>
+                      <td style={td} className="no-print">
+                        {link && (
+                          <a href={link} target="_blank" rel="noreferrer" style={{
+                            display: "inline-flex", alignItems: "center", gap: 5, background: "#25D366", color: "#fff",
+                            borderRadius: 20, padding: "4px 10px", fontSize: 11.5, fontWeight: 700, textDecoration: "none"
+                          }}>📱 واتساب</a>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -3622,7 +3657,7 @@ function TreasuryLedger({ treasuries, txs, institutionName }) {
   );
 }
 
-function TreasuryCustody({ currentUser, treasuries, custodies }) {
+function TreasuryCustody({ currentUser, treasuries, custodies, users }) {
   const canSettle = currentUser.role === "admin" || currentUser.role === "financial_manager";
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterKind, setFilterKind] = useState("all"); // "all" | "custody" | "advance"
@@ -3733,15 +3768,27 @@ function TreasuryCustody({ currentUser, treasuries, custodies }) {
 
       {searchedEmployeeSummary && (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-          {searchedEmployeeSummary.map((s) => (
-            <div key={s.name} style={{
-              flex: "1 1 220px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "12px 15px"
-            }}>
-              <div style={{ fontSize: 12, color: "#dbe6ff", marginBottom: 4 }}>المتبقي على "{s.name}" حاليًا ({s.count} عهدة/سلفة)</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>{fmt(s.remaining)} ر.س</div>
-              <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 2 }}>من إجمالي مستلم {fmt(s.totalReceived)} ر.س</div>
-            </div>
-          ))}
+          {searchedEmployeeSummary.map((s) => {
+            const phone = findUserPhoneByName(users, s.name);
+            const link = phone ? whatsappLink(phone, `مرحبًا ${s.name}،\nتذكير بخصوص العهدة/السلفة القائمة عليك بمبلغ ${fmt(s.remaining)} ر.س.\nالرجاء المبادرة بالتسوية أو تسجيل مصروفاتها في التطبيق.\nشكرًا لك.`) : null;
+            return (
+              <div key={s.name} style={{
+                flex: "1 1 220px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "12px 15px"
+              }}>
+                <div style={{ fontSize: 12, color: "#dbe6ff", marginBottom: 4 }}>المتبقي على "{s.name}" حاليًا ({s.count} عهدة/سلفة)</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>{fmt(s.remaining)} ر.س</div>
+                <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 2, marginBottom: 8 }}>من إجمالي مستلم {fmt(s.totalReceived)} ر.س</div>
+                {link ? (
+                  <a href={link} target="_blank" rel="noreferrer" style={{
+                    display: "inline-flex", alignItems: "center", gap: 6, background: "#25D366", color: "#fff",
+                    borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, textDecoration: "none"
+                  }}>📱 راسله على واتساب</a>
+                ) : (
+                  <div style={{ fontSize: 11, color: "#dbe6ff" }}>ما فيه رقم جوال مسجّل لهذا الاسم — أضفه من الإعدادات ↦ إدارة المستخدمين</div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -4947,7 +4994,7 @@ function ShiftsSettings({ meta, institutionId }) {
   );
 }
 
-const emptyUser = { username: "", password: "", name: "", role: "cashier", branch: "", branches: [] };
+const emptyUser = { username: "", password: "", name: "", role: "cashier", branch: "", branches: [], phone: "", email: "" };
 const emptyBulkRow = () => ({ _rid: uid(), username: "", password: "", name: "", role: "cashier", branch: "" });
 
 /* ============ صلاحيات الأدوار: تحكم من الإعدادات في وصول كل دور لكل تبويب ============ */
@@ -5067,7 +5114,7 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
     setForm(emptyUser); setEditingId(null); setMsg("");
   }
   function editUser(u) {
-    setForm({ username: u.username, password: u.password, name: u.name, role: u.role, branch: u.branch || "", branches: userBranches(u) });
+    setForm({ username: u.username, password: u.password, name: u.name, role: u.role, branch: u.branch || "", branches: userBranches(u), phone: u.phone || "", email: u.email || "" });
     setEditingId(u.id);
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   }
@@ -5142,6 +5189,8 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
           <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>اسم المستخدم (دخول)</label><input value={form.username} onChange={(e) => set("username", e.target.value)} style={inputStyle2} /></div>
           <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>كلمة المرور</label><input value={form.password} onChange={(e) => set("password", e.target.value)} style={inputStyle2} /></div>
           <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>الاسم الظاهر</label><input value={form.name} onChange={(e) => set("name", e.target.value)} style={inputStyle2} /></div>
+          <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>رقم الجوال (واتساب)</label><input value={form.phone} onChange={(e) => set("phone", e.target.value)} style={inputStyle2} placeholder="05xxxxxxxx" /></div>
+          <div style={{ flex: "1 1 170px" }}><label style={smallLabel}>البريد الإلكتروني</label><input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} style={inputStyle2} placeholder="name@example.com" /></div>
           <div style={{ flex: "1 1 150px" }}>
             <label style={smallLabel}>الصلاحية</label>
             <select value={form.role} onChange={(e) => set("role", e.target.value)} style={inputStyle2}>
