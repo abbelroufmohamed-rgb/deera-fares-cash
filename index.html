@@ -655,12 +655,12 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 flex: "1 1 200px", borderRadius: 10, padding: "12px 14px",
                 background: rem < 0 ? "linear-gradient(135deg,#7f1d1d,#b91c1c)" : "linear-gradient(135deg,#0f2557,#1d4ed8)"
               }}>
-                <div style={{ fontSize: 12, color: "#fde8e8" }}>{rem < 0 ? "مديونية عليك (صرفت أكتر من اللي استلمته)" : "الرصيد المتبقي حسب تسجيلك"}</div>
+                <div style={{ fontSize: 12, color: "#fde8e8" }}>{rem < 0 ? "مديونية من هذه العهدة لوحدها" : "الرصيد المتبقي من هذه العهدة لوحدها"}</div>
                 <div style={{ fontSize: 19, fontWeight: 800, color: "#fff" }}>{fmt(Math.abs(rem))}</div>
               </div>
             </div>
             <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
-              ملاحظة: كشف الحساب هذا حسب تسجيلك أنت، والمرجع الرسمي النهائي هو تسوية المحاسب/المدير المالي.
+              ملاحظة: هذا الرقم خاص بهذه العهدة بس، من غير احتساب أي عهد/سلف تانية لنفس الموظف. للرصيد الإجمالي الحقيقي، استخدم "كشف حساب شامل". والمرجع الرسمي النهائي هو تسوية المحاسب/المدير المالي.
             </div>
           </div>
         </div>
@@ -731,10 +731,15 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 flex: "1 1 150px", borderRadius: 10, padding: "10px 13px",
                 background: remLog < 0 ? "linear-gradient(135deg,#7f1d1d,#b91c1c)" : "linear-gradient(135deg,#0f2557,#1d4ed8)"
               }}>
-                <div style={{ fontSize: 11.5, color: "#fde8e8" }}>{remLog < 0 ? "مديونية عليك" : "الباقي عليك (حسب تسجيلك)"}</div>
+                <div style={{ fontSize: 11.5, color: "#fde8e8" }}>{remLog < 0 ? "مديونية من هذه العهدة لوحدها" : "الباقي من هذه العهدة لوحدها"}</div>
                 <div style={{ fontSize: 17, fontWeight: 800, color: "#fff" }}>{fmt(Math.abs(remLog))} ر.س</div>
               </div>
             </div>
+            {custodies.length > 1 && (
+              <div style={{ fontSize: 11, color: C.muted, marginTop: -8, marginBottom: 16 }}>
+                ⚠️ الرقم ده خاص بهذه العهدة بس، من غير احتساب أي مديونية من عهد سابقة. رصيدك الحقيقي الإجمالي بعد ربط كل عهدك مع بعض موضّح في البطاقة الزرقاء الكبيرة فوق ⬆️
+              </div>
+            )}
 
             <div style={{ borderTop: "1px solid " + C.border, paddingTop: 14 }}>
               <div style={{ fontWeight: 700, fontSize: 13.5, color: C.navy, marginBottom: 10 }}>➕ سجّل مصروف جديد</div>
@@ -3823,6 +3828,8 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
   const [note, setNote] = useState("");
   const [msg, setMsg] = useState("");
   const [expenseLogs, setExpenseLogs] = useState({}); // { custodyId: [...expenses] }
+  const [viewMode, setViewMode] = useState("flat"); // "flat" | "grouped"
+  const [expandedEmployee, setExpandedEmployee] = useState(null);
   const [fullStatementFor, setFullStatementFor] = useState(null); // اسم موظف نعرض له كشف حساب شامل
   const [selectedExpenseIds, setSelectedExpenseIds] = useState({}); // { custodyId: { expenseId: true } }
 
@@ -3886,6 +3893,20 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
     // eslint-disable-next-line
   }, [searchName, custodies]);
 
+  // تجميع القائمة المفلترة حسب الموظف — لكل موظف: عدد عهده/سلفه، إجمالي المستلم، والمتبقي الرسمي (تسويات)
+  const grouped = useMemo(() => {
+    const byName = {};
+    filtered.forEach((c) => {
+      const key = c.employeeName || "—";
+      if (!byName[key]) byName[key] = { name: key, items: [], totalReceived: 0, totalRemaining: 0 };
+      byName[key].items.push(c);
+      byName[key].totalReceived += Number(c.amount) || 0;
+      byName[key].totalRemaining += remainingOf(c);
+    });
+    return Object.values(byName).sort((a, b) => b.totalRemaining - a.totalRemaining);
+    // eslint-disable-next-line
+  }, [filtered]);
+
   // تحميل مصروفات العهدة (من مجموعتها الفرعية) عند فتح مراجعتها فقط — تحميل عند الطلب مش لكل العهد دفعة واحدة
   useEffect(() => {
     if (!settlingId) return;
@@ -3925,69 +3946,8 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
     } catch (e) { setMsg("خطأ: " + e.message); }
   }
 
-  return (
-    <div style={cardStyle}>
-      <div style={cardTitle}>🧍 عهد الموظفين</div>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        <div style={{ flex: "1 1 220px" }}>
-          <label style={smallLabel}>بحث باسم الموظف</label>
-          <input value={searchName} onChange={(e) => setSearchName(e.target.value)} style={inputStyle2} placeholder="اكتب اسم الموظف..." />
-        </div>
-        <div>
-          <label style={smallLabel}>النوع</label>
-          <select value={filterKind} onChange={(e) => setFilterKind(e.target.value)} style={inputStyle2}>
-            <option value="all">الكل (عهدة وسلفة)</option>
-            <option value="custody">عهدة بس</option>
-            <option value="advance">سلفة بس</option>
-          </select>
-        </div>
-      </div>
-
-      {searchedEmployeeSummary && (
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-          {searchedEmployeeSummary.map((s) => {
-            const phone = findUserPhoneByName(users, s.name);
-            const link = phone ? whatsappLink(phone, `مرحبًا ${s.name}،\nتذكير بخصوص العهدة/السلفة القائمة عليك بمبلغ ${fmt(s.remaining)} ر.س.\nالرجاء المبادرة بالتسوية أو تسجيل مصروفاتها في التطبيق.\nشكرًا لك.`) : null;
-            return (
-              <div key={s.name} style={{
-                flex: "1 1 220px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "12px 15px"
-              }}>
-                <div style={{ fontSize: 12, color: "#dbe6ff", marginBottom: 4 }}>المتبقي على "{s.name}" حاليًا ({s.count} عهدة/سلفة)</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>{fmt(s.remaining)} ر.س</div>
-                <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 2, marginBottom: 8 }}>من إجمالي مستلم {fmt(s.totalReceived)} ر.س</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <span onClick={() => setFullStatementFor(s.name)} style={{
-                    display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.18)", color: "#fff",
-                    borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer"
-                  }}>📊 كشف حساب شامل</span>
-                  {link && (
-                    <a href={link} target="_blank" rel="noreferrer" style={{
-                      display: "inline-flex", alignItems: "center", gap: 6, background: "#25D366", color: "#fff",
-                      borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, textDecoration: "none"
-                    }}>📱 راسله على واتساب</a>
-                  )}
-                </div>
-                {!link && (
-                  <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 6 }}>ما فيه رقم جوال مسجّل لهذا الاسم — أضفه من الإعدادات ↦ إدارة المستخدمين</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {[["all", "الكل"], ["outstanding", "قائمة"], ["partial", "جزئية"], ["settled", "مسددة"]].map(([k, l]) => (
-          <button key={k} onClick={() => setFilterStatus(k)} style={filterStatus === k ? smallBtn : ghostBtn}>{l}</button>
-        ))}
-      </div>
-      <div style={{ overflowX: "auto" }}>
-        <table style={tblStyle}>
-          <thead><tr><th style={th}>التاريخ</th><th style={th}>النوع</th><th style={th}>الموظف</th><th style={th}>الخزينة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>المتبقي</th><th style={th}>الحالة</th><th style={th}></th></tr></thead>
-          <tbody>
-            {filtered.map((c) => {
-              const rem = remainingOf(c);
+  function renderCustodyRow(c) {
+    const rem = remainingOf(c);
               const status = statusOf(c);
               const treasuryName = treasuries.find((t) => t.id === c.treasuryId)?.name || "—";
               return (
@@ -4122,8 +4082,98 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
                   )}
                 </React.Fragment>
               );
-            })}
-            {filtered.length === 0 && <tr><td colSpan={9} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد عهد</td></tr>}
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ ...cardTitle, marginBottom: 0, border: "none", padding: 0 }}>🧍 عهد الموظفين</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => setViewMode("flat")} style={viewMode === "flat" ? smallBtn : ghostBtn}>قائمة مسطحة</button>
+          <button onClick={() => setViewMode("grouped")} style={viewMode === "grouped" ? smallBtn : ghostBtn}>مجمّع حسب الموظف</button>
+        </div>
+      </div>
+      <div style={{ height: 14 }} />
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ flex: "1 1 220px" }}>
+          <label style={smallLabel}>بحث باسم الموظف</label>
+          <input value={searchName} onChange={(e) => setSearchName(e.target.value)} style={inputStyle2} placeholder="اكتب اسم الموظف..." />
+        </div>
+        <div>
+          <label style={smallLabel}>النوع</label>
+          <select value={filterKind} onChange={(e) => setFilterKind(e.target.value)} style={inputStyle2}>
+            <option value="all">الكل (عهدة وسلفة)</option>
+            <option value="custody">عهدة بس</option>
+            <option value="advance">سلفة بس</option>
+          </select>
+        </div>
+      </div>
+
+      {searchedEmployeeSummary && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          {searchedEmployeeSummary.map((s) => {
+            const phone = findUserPhoneByName(users, s.name);
+            const link = phone ? whatsappLink(phone, `مرحبًا ${s.name}،\nتذكير بخصوص العهدة/السلفة القائمة عليك بمبلغ ${fmt(s.remaining)} ر.س.\nالرجاء المبادرة بالتسوية أو تسجيل مصروفاتها في التطبيق.\nشكرًا لك.`) : null;
+            return (
+              <div key={s.name} style={{
+                flex: "1 1 220px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "12px 15px"
+              }}>
+                <div style={{ fontSize: 12, color: "#dbe6ff", marginBottom: 4 }}>المتبقي على "{s.name}" حاليًا ({s.count} عهدة/سلفة)</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>{fmt(s.remaining)} ر.س</div>
+                <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 2, marginBottom: 8 }}>من إجمالي مستلم {fmt(s.totalReceived)} ر.س</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span onClick={() => setFullStatementFor(s.name)} style={{
+                    display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.18)", color: "#fff",
+                    borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer"
+                  }}>📊 كشف حساب شامل</span>
+                  {link && (
+                    <a href={link} target="_blank" rel="noreferrer" style={{
+                      display: "inline-flex", alignItems: "center", gap: 6, background: "#25D366", color: "#fff",
+                      borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, textDecoration: "none"
+                    }}>📱 راسله على واتساب</a>
+                  )}
+                </div>
+                {!link && (
+                  <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 6 }}>ما فيه رقم جوال مسجّل لهذا الاسم — أضفه من الإعدادات ↦ إدارة المستخدمين</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        {[["all", "الكل"], ["outstanding", "قائمة"], ["partial", "جزئية"], ["settled", "مسددة"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilterStatus(k)} style={filterStatus === k ? smallBtn : ghostBtn}>{l}</button>
+        ))}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={tblStyle}>
+          <thead><tr><th style={th}>التاريخ</th><th style={th}>النوع</th><th style={th}>الموظف</th><th style={th}>الخزينة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>المتبقي</th><th style={th}>الحالة</th><th style={th}></th></tr></thead>
+          <tbody>
+            {viewMode === "flat" && filtered.map((c) => renderCustodyRow(c))}
+            {viewMode === "flat" && filtered.length === 0 && <tr><td colSpan={9} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد عهد</td></tr>}
+            {viewMode === "grouped" && grouped.map((g) => (
+              <React.Fragment key={g.name}>
+                <tr onClick={() => setExpandedEmployee(expandedEmployee === g.name ? null : g.name)} style={{ cursor: "pointer", background: C.blueSoft }}>
+                  <td style={td} colSpan={2}>
+                    <span style={{ fontWeight: 800, color: C.navy }}>{expandedEmployee === g.name ? "▾" : "◂"} {g.name}</span>
+                  </td>
+                  <td style={td}></td>
+                  <td style={td}></td>
+                  <td style={{ ...td, fontWeight: 700 }}>{g.items.length} عهدة/سلفة</td>
+                  <td style={td}>{fmt(g.totalReceived)}</td>
+                  <td style={{ ...td, fontWeight: 800, color: g.totalRemaining > 0 ? C.danger : C.success }}>{fmt(g.totalRemaining)}</td>
+                  <td style={td}></td>
+                  <td style={td}>
+                    <span onClick={(e) => { e.stopPropagation(); setFullStatementFor(g.name); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700, fontSize: 12.5 }}>📊 كشف شامل</span>
+                  </td>
+                </tr>
+                {expandedEmployee === g.name && g.items.map((c) => renderCustodyRow(c))}
+              </React.Fragment>
+            ))}
+            {viewMode === "grouped" && grouped.length === 0 && <tr><td colSpan={9} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد عهد</td></tr>}
           </tbody>
         </table>
       </div>
