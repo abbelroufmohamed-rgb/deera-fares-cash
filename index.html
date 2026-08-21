@@ -566,6 +566,11 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   const settled = custodies.filter((c) => remainingOfficial(c) <= 0);
   const reportCustody = reportId ? custodies.find((c) => c.id === reportId) : null;
 
+  // الرصيد الإجمالي الحقيقي بعد ربط كل العهد/السلف مع بعض (لو صرفت أكتر من عهدة، بتتغطى تلقائيًا من عهدة تانية)
+  const combinedTotalReceived = custodies.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const combinedTotalSpent = custodies.reduce((s, c) => s + loggedTotal(expensesByCustody[c.id] || []), 0);
+  const combinedRemaining = combinedTotalReceived - combinedTotalSpent;
+
   if (showFullStatement) {
     return <EmployeeCombinedStatement employeeName={currentUser.name} institutionId={institutionId} institutionName={institutionName} onClose={() => setShowFullStatement(false)} />;
   }
@@ -676,6 +681,21 @@ function CustodyHolderTab({ currentUser, institutionName }) {
       </div>
 
       {msg && <div style={{ marginBottom: 14, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+
+      {custodies.length > 1 && (
+        <div style={{
+          ...cardStyle, background: combinedRemaining < 0 ? "linear-gradient(135deg,#7f1d1d,#b91c1c)" : "linear-gradient(135deg,#0f2557,#1d4ed8)",
+          border: "none",
+        }}>
+          <div style={{ fontSize: 12.5, color: "#fde8e8", marginBottom: 4 }}>
+            {combinedRemaining < 0 ? "⚠️ مديونية إجمالية عليك (بعد ربط كل عهدك وسلفك مع بعض)" : "✅ رصيدك الإجمالي الحقيقي (بعد ربط كل عهدك وسلفك مع بعض)"}
+          </div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "#fff" }}>{fmt(Math.abs(combinedRemaining))} ر.س</div>
+          <div style={{ fontSize: 11.5, color: "#fde8e8", marginTop: 4 }}>
+            من إجمالي {custodies.length} عهدة/سلفة استلمتها ({fmt(combinedTotalReceived)} ر.س) — لو صرفت في عهدة أكتر من اللي فيها، الفرق بيتغطى تلقائيًا من أي عهدة/سلفة جديدة.
+          </div>
+        </div>
+      )}
 
       {active.length === 0 && (
         <div style={{ ...cardStyle, textAlign: "center", color: "#9ca3af" }}>ما عليك عهدة قائمة حاليًا</div>
