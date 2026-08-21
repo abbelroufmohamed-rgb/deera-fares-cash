@@ -263,6 +263,127 @@ const dangerBtn = { background: "#fff", color: C.danger, border: "1px solid #fca
 /* ============ إدارة المؤسسات (سوبر أدمن فقط) ============ */
 /* ============ شاشة أمين العهدة: عرض عهدته + تصوير فواتير مباشرة من الكاميرا ============ */
 /* عرض مرفق (صورة أو PDF) بشكل موحّد */
+/* ============ كشف حساب شامل لموظف: يجمع كل عهده وسلفه (متعددة) في حساب واحد متصل زمنيًا،
+   بحيث لو صرف أكتر من عهدة، الرصيد السالب يتغطى تلقائيًا من العهدة/السلفة الجديدة بدل ما يفضل معلّق منفصل ============ */
+function EmployeeCombinedStatement({ employeeName, institutionId, institutionName, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [totals, setTotals] = useState({ received: 0, spent: 0, remaining: 0 });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      const snap = await CUSTODIES_COL.where("employeeName", "==", employeeName).get();
+      let custodies = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      custodies = custodies.filter((c) => (c.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+
+      const events = [];
+      custodies.forEach((c) => {
+        events.push({
+          kind: "receipt", date: c.date, sortKey: (c.date || "") + "_0",
+          label: (c.kind === "advance" ? "استلام سلفة" : "استلام عهدة") + (c.description ? " — " + c.description : ""),
+          amount: Number(c.amount) || 0, supplierName: "—", category: "—",
+        });
+      });
+
+      const expenseLists = await Promise.all(custodies.map((c) => custodyExpensesCol(c.id).get()));
+      expenseLists.forEach((expSnap) => {
+        expSnap.docs.forEach((d) => {
+          const e = d.data();
+          events.push({
+            kind: "expense", date: e.date, sortKey: (e.date || "") + "_" + (e.enteredAt || 1),
+            label: e.description || "مصروف", amount: -(Number(e.amount) || 0),
+            supplierName: e.supplierName || "—", category: e.category || "—",
+          });
+        });
+      });
+
+      events.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+      let running = 0;
+      const ledger = events.map((e) => { running += e.amount; return { ...e, balanceAfter: running }; });
+
+      const received = custodies.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+      const spent = events.filter((e) => e.kind === "expense").reduce((s, e) => s + Math.abs(e.amount), 0);
+
+      if (!cancelled) {
+        setRows(ledger);
+        setTotals({ received, spent, remaining: received - spent });
+        setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [employeeName, institutionId]);
+
+  function doPrint() { window.print(); }
+
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+        <button onClick={doPrint} style={smallBtn}>🖨️ طباعة الكشف الشامل</button>
+        {onClose && <button onClick={onClose} style={ghostBtn}>رجوع</button>}
+      </div>
+      {loading ? (
+        <div style={{ color: C.muted, padding: 20 }}>جارِ تجميع كل عهد ومصروفات {employeeName}...</div>
+      ) : (
+        <div className="print-area">
+          <div className="print-only-header">
+            <h2>{institutionName}</h2>
+            <div>كشف حساب شامل (كل العهد والسلف) — {employeeName}</div>
+          </div>
+          <div style={cardStyle}>
+            <div style={cardTitle}>📊 حساب "{employeeName}" — كل العهد والسلف مجمّعة زمنيًا</div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>
+              هذا الكشف بيربط كل عهدة وسلفة استلمها الموظف مع بعض في حساب واحد متصل — لو صرف أكتر من عهدة واحدة، أي رصيد سالب بيتغطى تلقائيًا من أي عهدة/سلفة جديدة يستلمها بعدها.
+            </div>
+          </div>
+          <div style={cardStyle}>
+            <div style={cardTitle}>📋 كل الحركات بالترتيب الزمني</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={tblStyle}>
+                <thead><tr><th style={th}>التاريخ</th><th style={th}>البيان</th><th style={th}>المورد</th><th style={th}>الفئة</th><th style={th}>المبلغ</th><th style={th}>الرصيد المتراكم</th></tr></thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={i} style={{ background: r.kind === "receipt" ? C.blueSoft : undefined }}>
+                      <td style={td}>{r.date}</td>
+                      <td style={{ ...td, fontWeight: r.kind === "receipt" ? 700 : 400 }}>{r.label}</td>
+                      <td style={td}>{r.supplierName}</td>
+                      <td style={td}>{r.category}</td>
+                      <td style={{ ...td, color: r.amount < 0 ? C.danger : C.success, fontWeight: 700 }}>{r.amount < 0 ? "-" : "+"}{fmt(Math.abs(r.amount))}</td>
+                      <td style={{ ...td, fontWeight: 800, color: r.balanceAfter < 0 ? C.danger : C.text }}>{fmt(r.balanceAfter)}</td>
+                    </tr>
+                  ))}
+                  {rows.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>ما فيه أي حركات مسجّلة</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={cardStyle}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 200px", background: C.blueSoft, borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 12, color: C.muted }}>إجمالي كل العهد/السلف المستلمة</div>
+                <div style={{ fontSize: 19, fontWeight: 800, color: C.navy }}>{fmt(totals.received)}</div>
+              </div>
+              <div style={{ flex: "1 1 200px", background: C.blueSoft, borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 12, color: C.muted }}>إجمالي المصروف</div>
+                <div style={{ fontSize: 19, fontWeight: 800, color: C.navy }}>{fmt(totals.spent)}</div>
+              </div>
+              <div style={{
+                flex: "1 1 200px", borderRadius: 10, padding: "12px 14px",
+                background: totals.remaining < 0 ? "linear-gradient(135deg,#7f1d1d,#b91c1c)" : "linear-gradient(135deg,#0f2557,#1d4ed8)"
+              }}>
+                <div style={{ fontSize: 12, color: "#fde8e8" }}>{totals.remaining < 0 ? "مديونية على الموظف (صرف أكتر من اللي استلمه)" : "الرصيد المتبقي معه"}</div>
+                <div style={{ fontSize: 19, fontWeight: 800, color: "#fff" }}>{fmt(Math.abs(totals.remaining))}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AttachmentThumb({ url, fileType, size = 40, onRemove }) {
   if (!url) return "—";
   const inner = fileType === "pdf" ? (
@@ -297,6 +418,7 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   const [msg, setMsg] = useState("");
   const [forms, setForms] = useState({}); // { custodyId: { amount, description, date, photo } }
   const [reportId, setReportId] = useState(null);
+  const [showFullStatement, setShowFullStatement] = useState(false);
   const fileInputRefs = useRef({});
 
   useEffect(() => {
@@ -444,6 +566,10 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   const settled = custodies.filter((c) => remainingOfficial(c) <= 0);
   const reportCustody = reportId ? custodies.find((c) => c.id === reportId) : null;
 
+  if (showFullStatement) {
+    return <EmployeeCombinedStatement employeeName={currentUser.name} institutionId={institutionId} institutionName={institutionName} onClose={() => setShowFullStatement(false)} />;
+  }
+
   if (reportCustody) {
     const log = expensesByCustody[reportCustody.id] || [];
     const total = loggedTotal(log);
@@ -537,7 +663,10 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   return (
     <div>
       <div style={cardStyle}>
-        <div style={cardTitle}>🧍 عهدتي — {currentUser.name}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+          <div style={cardTitle}>🧍 عهدتي — {currentUser.name}</div>
+          <button onClick={() => setShowFullStatement(true)} style={ghostBtn}>📊 كشف حساب شامل (كل عهدي مع بعض)</button>
+        </div>
         <div style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>
           من هنا تسجّل كل مصروف تصرفه من عهدتك (المبلغ، البيان، وصورة الفاتورة إذا تبي)، وتشوف كم استلمت وكم باقي عليك، وتطبع تقرير كامل عن عهدتك.
         </div>
@@ -982,7 +1111,7 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
           <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} />
         )}
         {tab === "custodyReview" && (effectivePerms.custodyReview || []).includes(currentUser.role) && (
-          <CustodyReviewTab currentUser={currentUser} users={institutionUsers} />
+          <CustodyReviewTab currentUser={currentUser} users={institutionUsers} institutionName={institutionName} />
         )}
         {tab === "treasury" && (effectivePerms.treasury || []).includes(currentUser.role) && (
           <TreasuryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />
@@ -2135,7 +2264,7 @@ const REQUEST_STATUS_LABEL = { pending: "قيد المراجعة", approved: "ت
 const REQUEST_STATUS_COLOR = { pending: "#d97706", approved: "#15803d", rejected: "#b91c1c" };
 
 /* ============ عهد الموظفين — وصول محدود للمحاسب (بدون صلاحية التسوية المالية) ============ */
-function CustodyReviewTab({ currentUser, users }) {
+function CustodyReviewTab({ currentUser, users, institutionName }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
   const [treasuries, setTreasuries] = useState(null);
   const [custodies, setCustodies] = useState([]);
@@ -2161,7 +2290,7 @@ function CustodyReviewTab({ currentUser, users }) {
 
   if (treasuries === null) return <div style={{ color: C.muted, padding: 20 }}>جارِ التحميل...</div>;
 
-  return <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} />;
+  return <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} institutionName={institutionName} />;
 }
 
 function ExpenseRequestTab({ currentUser, institutionName }) {
@@ -2382,7 +2511,7 @@ function TreasuryTab({ currentUser, meta, users, institutionName }) {
       )}
       {sub === "ledger" && <TreasuryLedger treasuries={treasuries} txs={txs} institutionName={institutionName} />}
       {sub === "count" && <TreasuryCashCount currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
-      {sub === "custody" && <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} />}
+      {sub === "custody" && <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} institutionName={institutionName} />}
       {sub === "vouchers" && <TreasuryVouchers currentUser={currentUser} treasuries={treasuries} txs={txs} institutionName={institutionName} institutionId={institutionId} />}
       {sub === "approvals" && <TreasuryApprovals currentUser={currentUser} treasuries={treasuries} institutionId={institutionId} institutionName={institutionName} />}
       {sub === "manage" && <TreasuryManage treasuries={treasuries} institutionId={institutionId} />}
@@ -3657,7 +3786,7 @@ function TreasuryLedger({ treasuries, txs, institutionName }) {
   );
 }
 
-function TreasuryCustody({ currentUser, treasuries, custodies, users }) {
+function TreasuryCustody({ currentUser, treasuries, custodies, users, institutionName }) {
   const canSettle = currentUser.role === "admin" || currentUser.role === "financial_manager";
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterKind, setFilterKind] = useState("all"); // "all" | "custody" | "advance"
@@ -3668,6 +3797,7 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users }) {
   const [note, setNote] = useState("");
   const [msg, setMsg] = useState("");
   const [expenseLogs, setExpenseLogs] = useState({}); // { custodyId: [...expenses] }
+  const [fullStatementFor, setFullStatementFor] = useState(null); // اسم موظف نعرض له كشف حساب شامل
   const [selectedExpenseIds, setSelectedExpenseIds] = useState({}); // { custodyId: { expenseId: true } }
 
   function toggleExpenseSelection(custodyId, expenseId) {
@@ -3694,6 +3824,15 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users }) {
   }
   const STATUS_LABEL = { settled: "مسددة بالكامل", partial: "مسددة جزئيًا", outstanding: "قائمة" };
   const STATUS_COLOR = { settled: C.success, partial: "#d97706", outstanding: C.danger };
+
+  if (fullStatementFor) {
+    return (
+      <EmployeeCombinedStatement
+        employeeName={fullStatementFor} institutionId={currentUser.institutionId || DEFAULT_INSTITUTION_ID}
+        institutionName={institutionName} onClose={() => setFullStatementFor(null)}
+      />
+    );
+  }
 
   const filtered = custodies.filter((c) => {
     if (filterStatus !== "all" && statusOf(c) !== filterStatus) return false;
@@ -3791,13 +3930,20 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users }) {
                 <div style={{ fontSize: 12, color: "#dbe6ff", marginBottom: 4 }}>المتبقي على "{s.name}" حاليًا ({s.count} عهدة/سلفة)</div>
                 <div style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>{fmt(s.remaining)} ر.س</div>
                 <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 2, marginBottom: 8 }}>من إجمالي مستلم {fmt(s.totalReceived)} ر.س</div>
-                {link ? (
-                  <a href={link} target="_blank" rel="noreferrer" style={{
-                    display: "inline-flex", alignItems: "center", gap: 6, background: "#25D366", color: "#fff",
-                    borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, textDecoration: "none"
-                  }}>📱 راسله على واتساب</a>
-                ) : (
-                  <div style={{ fontSize: 11, color: "#dbe6ff" }}>ما فيه رقم جوال مسجّل لهذا الاسم — أضفه من الإعدادات ↦ إدارة المستخدمين</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span onClick={() => setFullStatementFor(s.name)} style={{
+                    display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.18)", color: "#fff",
+                    borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer"
+                  }}>📊 كشف حساب شامل</span>
+                  {link && (
+                    <a href={link} target="_blank" rel="noreferrer" style={{
+                      display: "inline-flex", alignItems: "center", gap: 6, background: "#25D366", color: "#fff",
+                      borderRadius: 20, padding: "6px 14px", fontSize: 12.5, fontWeight: 700, textDecoration: "none"
+                    }}>📱 راسله على واتساب</a>
+                  )}
+                </div>
+                {!link && (
+                  <div style={{ fontSize: 11, color: "#dbe6ff", marginTop: 6 }}>ما فيه رقم جوال مسجّل لهذا الاسم — أضفه من الإعدادات ↦ إدارة المستخدمين</div>
                 )}
               </div>
             );
