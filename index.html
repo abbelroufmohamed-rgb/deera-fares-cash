@@ -453,7 +453,7 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     return (expenses || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
   }
   function remainingByLog(c, expenses) {
-    return Math.max(0, (Number(c.amount) || 0) - loggedTotal(expenses));
+    return (Number(c.amount) || 0) - loggedTotal(expenses);
   }
 
   function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null }; }
@@ -646,9 +646,12 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div style={{ fontSize: 12, color: C.muted }}>إجمالي المصروف</div>
                 <div style={{ fontSize: 19, fontWeight: 800, color: C.navy }}>{fmt(total)}</div>
               </div>
-              <div style={{ flex: "1 1 200px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "12px 14px" }}>
-                <div style={{ fontSize: 12, color: "#dbe6ff" }}>الرصيد المتبقي حسب تسجيلك</div>
-                <div style={{ fontSize: 19, fontWeight: 800, color: "#fff" }}>{fmt(rem)}</div>
+              <div style={{
+                flex: "1 1 200px", borderRadius: 10, padding: "12px 14px",
+                background: rem < 0 ? "linear-gradient(135deg,#7f1d1d,#b91c1c)" : "linear-gradient(135deg,#0f2557,#1d4ed8)"
+              }}>
+                <div style={{ fontSize: 12, color: "#fde8e8" }}>{rem < 0 ? "مديونية عليك (صرفت أكتر من اللي استلمته)" : "الرصيد المتبقي حسب تسجيلك"}</div>
+                <div style={{ fontSize: 19, fontWeight: 800, color: "#fff" }}>{fmt(Math.abs(rem))}</div>
               </div>
             </div>
             <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>
@@ -704,9 +707,12 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div style={{ fontSize: 11.5, color: C.muted }}>مسجّلته من مصروفات</div>
                 <div style={{ fontSize: 17, fontWeight: 800, color: C.navy }}>{fmt(total)} ر.س</div>
               </div>
-              <div style={{ flex: "1 1 150px", background: "linear-gradient(135deg,#0f2557,#1d4ed8)", borderRadius: 10, padding: "10px 13px" }}>
-                <div style={{ fontSize: 11.5, color: "#dbe6ff" }}>الباقي عليك (حسب تسجيلك)</div>
-                <div style={{ fontSize: 17, fontWeight: 800, color: "#fff" }}>{fmt(remLog)} ر.س</div>
+              <div style={{
+                flex: "1 1 150px", borderRadius: 10, padding: "10px 13px",
+                background: remLog < 0 ? "linear-gradient(135deg,#7f1d1d,#b91c1c)" : "linear-gradient(135deg,#0f2557,#1d4ed8)"
+              }}>
+                <div style={{ fontSize: 11.5, color: "#fde8e8" }}>{remLog < 0 ? "مديونية عليك" : "الباقي عليك (حسب تسجيلك)"}</div>
+                <div style={{ fontSize: 17, fontWeight: 800, color: "#fff" }}>{fmt(Math.abs(remLog))} ر.س</div>
               </div>
             </div>
 
