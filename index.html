@@ -3858,15 +3858,6 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
   const STATUS_LABEL = { settled: "مسددة بالكامل", partial: "مسددة جزئيًا", outstanding: "قائمة" };
   const STATUS_COLOR = { settled: C.success, partial: "#d97706", outstanding: C.danger };
 
-  if (fullStatementFor) {
-    return (
-      <EmployeeCombinedStatement
-        employeeName={fullStatementFor} institutionId={currentUser.institutionId || DEFAULT_INSTITUTION_ID}
-        institutionName={institutionName} onClose={() => setFullStatementFor(null)}
-      />
-    );
-  }
-
   const filtered = custodies.filter((c) => {
     if (filterStatus !== "all" && statusOf(c) !== filterStatus) return false;
     if (filterKind === "advance" && c.kind !== "advance") return false;
@@ -3944,6 +3935,15 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
       }
       setSettlingId(null); setCashReturned(""); setExpensed(""); setNote(""); setMsg("");
     } catch (e) { setMsg("خطأ: " + e.message); }
+  }
+
+  if (fullStatementFor) {
+    return (
+      <EmployeeCombinedStatement
+        employeeName={fullStatementFor} institutionId={currentUser.institutionId || DEFAULT_INSTITUTION_ID}
+        institutionName={institutionName} onClose={() => setFullStatementFor(null)}
+      />
+    );
   }
 
   function renderCustodyRow(c) {
