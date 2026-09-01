@@ -3824,6 +3824,7 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
   const [searchName, setSearchName] = useState("");
   const [settlingId, setSettlingId] = useState(null);
   const [cashReturned, setCashReturned] = useState("");
+  const [repaymentMethod, setRepaymentMethod] = useState("cash"); // "cash" | "card"
   const [expensed, setExpensed] = useState("");
   const [note, setNote] = useState("");
   const [msg, setMsg] = useState("");
@@ -3918,22 +3919,24 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
     const cash = Number(cashReturned) || 0;
     const exp = Number(expensed) || 0;
     const rem = remainingOf(c);
-    if (cash + exp <= 0) { setMsg("أدخل مبلغ مرتجع نقدي أو مصروف بإيصالات"); return; }
+    if (cash + exp <= 0) { setMsg("أدخل مبلغ مرتجع (كاش أو بطاقة) أو مصروف بإيصالات"); return; }
     if (cash + exp > rem + 0.01) { setMsg("المبلغ المدخل أكبر من المتبقي في العهدة (" + fmt(rem) + ")"); return; }
     try {
       await CUSTODIES_COL.doc(c.id).update({
         settlements: firebase.firestore.FieldValue.arrayUnion({
-          date: todayStr(), cashReturned: cash, expensed: exp, note, by: currentUser.name, at: Date.now(),
+          date: todayStr(), cashReturned: cash, repaymentMethod: cash > 0 ? repaymentMethod : null,
+          expensed: exp, note, by: currentUser.name, at: Date.now(),
         }),
       });
       if (cash > 0) {
+        const methodLabel = repaymentMethod === "card" ? "بطاقة/تحويل" : "كاش";
         await TREASURY_TX_COL.add({
           treasuryId: c.treasuryId, type: "custody_settle", amount: cash, date: todayStr(),
-          description: "تسوية عهدة " + c.employeeName + (note ? " — " + note : ""), custodyId: c.id,
-          enteredBy: currentUser.name, enteredByRole: currentUser.role, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          description: "تسوية عهدة " + c.employeeName + " (سداد " + methodLabel + ")" + (note ? " — " + note : ""), custodyId: c.id,
+          repaymentMethod, enteredBy: currentUser.name, enteredByRole: currentUser.role, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
       }
-      setSettlingId(null); setCashReturned(""); setExpensed(""); setNote(""); setMsg("");
+      setSettlingId(null); setCashReturned(""); setExpensed(""); setNote(""); setRepaymentMethod("cash"); setMsg("");
     } catch (e) { setMsg("خطأ: " + e.message); }
   }
 
@@ -4061,7 +4064,14 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
                         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
                           {canSettle ? (
                             <>
-                              <div><label style={smallLabel}>مبلغ مرتجع نقدي</label><input type="number" step="0.01" value={cashReturned} onChange={(e) => setCashReturned(e.target.value)} style={{ ...inputStyle2, width: 140 }} /></div>
+                              <div><label style={smallLabel}>مبلغ مرتجع (كاش/بطاقة)</label><input type="number" step="0.01" value={cashReturned} onChange={(e) => setCashReturned(e.target.value)} style={{ ...inputStyle2, width: 140 }} /></div>
+                              <div>
+                                <label style={smallLabel}>طريقة السداد</label>
+                                <select value={repaymentMethod} onChange={(e) => setRepaymentMethod(e.target.value)} style={inputStyle2}>
+                                  <option value="cash">💵 كاش</option>
+                                  <option value="card">💳 بطاقة / تحويل بنكي</option>
+                                </select>
+                              </div>
                               <div><label style={smallLabel}>مبلغ محوّل لمصروف (بإيصالات)</label><input type="number" step="0.01" value={expensed} onChange={(e) => setExpensed(e.target.value)} style={{ ...inputStyle2, width: 160 }} /></div>
                               <div style={{ flex: "1 1 200px" }}><label style={smallLabel}>ملاحظة</label><input value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle2} /></div>
                               <button onClick={() => submitSettlement(c)} style={smallBtn}>حفظ التسوية</button>
@@ -4073,7 +4083,7 @@ function TreasuryCustody({ currentUser, treasuries, custodies, users, institutio
                         {(c.settlements || []).length > 0 && (
                           <div style={{ marginTop: 10, fontSize: 12, color: C.muted }}>
                             سجل التسويات السابقة: {(c.settlements || []).map((s, i) => (
-                              <span key={i}>{s.date} (نقدي {fmt(s.cashReturned)} / مصروف {fmt(s.expensed)}){i < c.settlements.length - 1 ? "، " : ""}</span>
+                              <span key={i}>{s.date} ({fmt(s.cashReturned)} {s.repaymentMethod === "card" ? "💳 بطاقة" : s.cashReturned > 0 ? "💵 كاش" : ""} / مصروف {fmt(s.expensed)}){i < c.settlements.length - 1 ? "، " : ""}</span>
                             ))}
                           </div>
                         )}
