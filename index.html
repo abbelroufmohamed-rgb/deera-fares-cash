@@ -1545,11 +1545,13 @@ function FinancialManagerDashboard({ currentUser, institutionName, setTab }) {
   const [notifs, setNotifs] = useState([]);
 
   useEffect(() => {
-    const unsub = EXPENSE_REQUESTS_COL.where("status", "==", "pending").orderBy("createdAt", "desc").limit(50).onSnapshot((snap) => {
+    // بنجيب كل الطلبات مرتّبة بالتاريخ من غير فلتر "status" في الاستعلام نفسه (فلترة الحالة بتتم بعد الجلب) —
+    // عشان نتفادى الحاجة لفهرس مركّب (composite index) لسه مش متولّد على المشروع، واللي بيسبب فشل صامت للاستعلام
+    const unsub = EXPENSE_REQUESTS_COL.orderBy("createdAt", "desc").limit(200).onSnapshot((snap) => {
       let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId && r.status === "pending");
       setPendingRequests(data);
-    });
+    }, (err) => { console.error("expense requests listener error:", err); });
     return unsub;
   }, [institutionId]);
 
