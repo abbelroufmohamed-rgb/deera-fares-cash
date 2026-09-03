@@ -140,6 +140,7 @@ const ROLE_LABELS = {
 
 /* ============ الصلاحيات الافتراضية لكل تبويب (قابلة للتخصيص من الإعدادات لكل مؤسسة) ============ */
 const TAB_DEFS = [
+  { id: "fmDashboard", icon: "bank", label: "لوحة التحكم" },
   { id: "entry", icon: "entry", label: "تسجيل وردية" },
   { id: "report", icon: "report", label: "التقارير" },
   { id: "expenseRequest", icon: "send", label: "طلب صرف" },
@@ -149,6 +150,7 @@ const TAB_DEFS = [
 ];
 const CONFIGURABLE_ROLES = ["admin", "financial_manager", "accountant", "branch_manager", "cashier", "custody_holder"];
 const DEFAULT_TAB_PERMISSIONS = {
+  fmDashboard: ["financial_manager", "admin"],
   entry: ["admin", "accountant", "branch_manager", "cashier"],
   report: ["admin", "accountant", "branch_manager", "cashier"],
   expenseRequest: ["admin", "financial_manager", "accountant", "branch_manager"],
@@ -1113,6 +1115,7 @@ function App() {
         const u = JSON.parse(savedSession);
         setCurrentUser(u);
         if (u.role === "custody_holder") setTab("myCustody");
+        else if (u.role === "financial_manager") setTab("fmDashboard");
       } catch (e) {}
     }
   }, []);
@@ -1179,6 +1182,7 @@ function App() {
     setCurrentUser(withInst);
     localStorage.setItem("cashRecon-session", JSON.stringify(withInst));
     if (u.role === "custody_holder") setTab("myCustody");
+    else if (u.role === "financial_manager") setTab("fmDashboard");
     else setTab("entry");
   }
   function handleLogout() {
@@ -1245,6 +1249,9 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
       </div>
 
       <div style={{ padding: 20, maxWidth: 1360, margin: "0 auto" }}>
+        {tab === "fmDashboard" && (effectivePerms.fmDashboard || []).includes(currentUser.role) && (
+          <FinancialManagerDashboard currentUser={currentUser} institutionName={institutionName} setTab={setTab} />
+        )}
         {tab === "entry" && <EntryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "expenseRequest" && (
@@ -1526,6 +1533,169 @@ async function syncShortageNotification(shiftId, shift, meta, institutionId) {
   } else {
     await ref.delete().catch(() => {});
   }
+}
+
+/* ============ لوحة تحكم المدير المالي: نظرة سريعة عند الدخول — طلبات معلّقة، إشعارات، أرصدة ============ */
+function FinancialManagerDashboard({ currentUser, institutionName, setTab }) {
+  const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
+  const [pendingRequests, setPendingRequests] = useState([]);
+  const [treasuries, setTreasuries] = useState(null);
+  const [txs, setTxs] = useState([]);
+  const [custodies, setCustodies] = useState([]);
+  const [notifs, setNotifs] = useState([]);
+
+  useEffect(() => {
+    const unsub = EXPENSE_REQUESTS_COL.where("status", "==", "pending").orderBy("createdAt", "desc").limit(50).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setPendingRequests(data);
+    });
+    return unsub;
+  }, [institutionId]);
+
+  useEffect(() => {
+    const unsub = TREASURIES_COL.onSnapshot((snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((t) => (t.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setTreasuries(list);
+    });
+    return unsub;
+  }, [institutionId]);
+
+  useEffect(() => {
+    const unsub = TREASURY_TX_COL.orderBy("createdAt", "desc").limit(2000).onSnapshot((snap) => {
+      setTxs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = CUSTODIES_COL.orderBy("createdAt", "desc").limit(500).onSnapshot((snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((c) => (c.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setCustodies(list);
+    });
+    return unsub;
+  }, [institutionId]);
+
+  useEffect(() => {
+    const unsub = NOTIF_COL.orderBy("createdAt", "desc").limit(60).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((n) => (n.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      data = data.filter((n) => !(n.readBy || []).includes(currentUser.id));
+      setNotifs(data.slice(0, 6));
+    });
+    return unsub;
+  }, [institutionId, currentUser.id]);
+
+  const treasuryIdSet = new Set((treasuries || []).map((t) => t.id));
+  const scopedTxs = txs.filter((t) => treasuryIdSet.has(t.treasuryId) || (t.relatedTreasuryId && treasuryIdSet.has(t.relatedTreasuryId)));
+  const grandBalance = (treasuries || []).reduce((s, t) => s + computeTreasuryBalance(t, scopedTxs), 0);
+  const negativeTreasuries = (treasuries || []).map((t) => ({ t, bal: computeTreasuryBalance(t, scopedTxs) })).filter((x) => x.bal < 0);
+
+  const outstandingCustody = custodies.reduce((s, c) => {
+    const settled = (c.settlements || []).reduce((ss, x) => ss + (Number(x.cashReturned) || 0) + (Number(x.expensed) || 0), 0);
+    return s + Math.max(0, (Number(c.amount) || 0) - settled);
+  }, 0);
+
+  const pendingTotal = pendingRequests.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+  return (
+    <div>
+      <div style={{
+        ...cardStyle, background: "linear-gradient(135deg,#0f2557,#1d4ed8)", border: "none",
+        boxShadow: "0 10px 30px rgba(15,37,87,0.25)",
+      }}>
+        <div style={{ fontSize: 20, fontWeight: 800, color: "#fff", marginBottom: 4 }}>مرحبًا، {currentUser.name} 👋</div>
+        <div style={{ fontSize: 13, color: "#c7d5f5" }}>نظرة سريعة على وضع {institutionName} النهاردة</div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+        <div onClick={() => setTab("treasury")} style={{
+          flex: "1 1 220px", cursor: "pointer", background: "#fff", border: "1px solid " + C.border, borderRadius: 12, padding: "16px 18px",
+        }}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>💰 إجمالي أرصدة الخزائن</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: grandBalance < 0 ? C.danger : C.navy }}>{fmt(grandBalance)} ر.س</div>
+        </div>
+        <div onClick={() => setTab("treasury")} style={{
+          flex: "1 1 220px", cursor: "pointer", background: "#fff", border: "1px solid " + C.border, borderRadius: 12, padding: "16px 18px",
+        }}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>🧍 عهد وسلف قائمة</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: outstandingCustody > 0 ? "#d97706" : C.success }}>{fmt(outstandingCustody)} ر.س</div>
+        </div>
+        <div onClick={() => setTab("treasury")} style={{
+          flex: "1 1 220px", cursor: "pointer", borderRadius: 12, padding: "16px 18px",
+          background: pendingRequests.length > 0 ? "linear-gradient(135deg,#7c2d12,#c2410c)" : "#fff",
+          border: pendingRequests.length > 0 ? "none" : "1px solid " + C.border,
+        }}>
+          <div style={{ fontSize: 12, color: pendingRequests.length > 0 ? "#fed7aa" : C.muted, marginBottom: 6 }}>📝 طلبات صرف بانتظار اعتمادك</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: pendingRequests.length > 0 ? "#fff" : C.navy }}>
+            {pendingRequests.length} {pendingRequests.length > 0 && <span style={{ fontSize: 13, fontWeight: 600 }}>({fmt(pendingTotal)} ر.س)</span>}
+          </div>
+        </div>
+      </div>
+
+      {negativeTreasuries.length > 0 && (
+        <div style={cardStyle}>
+          <div style={cardTitle}>⚠️ خزائن برصيد سالب — محتاجة توريد عاجل</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {negativeTreasuries.map(({ t, bal }) => (
+              <div key={t.id} style={{ flex: "1 1 200px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "10px 14px" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.navy }}>{t.name}</div>
+                <div style={{ fontSize: 17, fontWeight: 800, color: C.danger }}>{fmt(bal)} ر.س</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 320px" }}>
+          <div style={cardStyle}>
+            <div style={cardTitle}>📝 آخر طلبات الصرف المعلّقة</div>
+            {pendingRequests.length === 0 ? (
+              <div style={{ color: "#9ca3af", fontSize: 13 }}>لا يوجد طلبات معلّقة حاليًا 🎉</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {pendingRequests.slice(0, 5).map((r) => (
+                  <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: C.blueSoft, borderRadius: 8, padding: "8px 12px" }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: C.navy }}>{r.requestedBy}</div>
+                      <div style={{ fontSize: 11.5, color: C.muted }}>{r.description}</div>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: C.navy }}>{fmt(r.amount)}</div>
+                  </div>
+                ))}
+                <button onClick={() => setTab("treasury")} style={{ ...ghostBtn, marginTop: 6 }}>عرض كل الطلبات في "اعتماد الصرف"</button>
+              </div>
+            )}
+          </div>
+        </div>
+        <div style={{ flex: "1 1 320px" }}>
+          <div style={cardStyle}>
+            <div style={cardTitle}>🔔 آخر الإشعارات</div>
+            {notifs.length === 0 ? (
+              <div style={{ color: "#9ca3af", fontSize: 13 }}>لا يوجد إشعارات جديدة</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {notifs.map((n) => (
+                  <div key={n.id} style={{ fontSize: 12.5, color: C.text, background: C.blueSoft, borderRadius: 8, padding: "8px 12px" }}>{n.message}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={cardStyle}>
+        <div style={cardTitle}>⚡ اختصارات سريعة</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={() => setTab("treasury")} style={smallBtn}>✅ اعتماد الصرف</button>
+          <button onClick={() => setTab("custodyReview")} style={ghostBtn}>🧍 عهد الموظفين</button>
+          <button onClick={() => setTab("treasury")} style={ghostBtn}>➕ تسجيل حركة</button>
+          <button onClick={() => setTab("report")} style={ghostBtn}>📊 التقارير</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function EntryTab({ currentUser, meta, users }) {
