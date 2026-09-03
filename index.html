@@ -1248,7 +1248,7 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
         {tab === "entry" && <EntryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "expenseRequest" && (
-          <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} />
+          <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} users={institutionUsers} />
         )}
         {tab === "custodyReview" && (effectivePerms.custodyReview || []).includes(currentUser.role) && (
           <CustodyReviewTab currentUser={currentUser} users={institutionUsers} institutionName={institutionName} />
@@ -1372,7 +1372,7 @@ function NotificationBell({ currentUser, setTab }) {
 
 /* ============ تبويب تسجيل الوردية ============ */
 const FIELD_GROUPS = [
-  { title: "الكاش (النقدية)", fields: [
+  { title: "الكاش (النقدية)", icon: "💵", color: "#0f766e", soft: "#f0fdfa", border: "#99f6e4", fields: [
       { key: "collection", label: "مبلغ التحصيل", type: "number" },
       { key: "purchases", label: "مشتريات (من الكاش)", type: "number" },
       { key: "withdrawals", label: "مسحوبات (سلف/صرف)", type: "number" },
@@ -1380,7 +1380,7 @@ const FIELD_GROUPS = [
       { key: "foodicsCash", label: "المبلغ في فودكس (كاش)", type: "number" },
       { key: "refund", label: "المسترجع", type: "number" },
   ]},
-  { title: "الشبكة / البطاقات", fields: [
+  { title: "الشبكة / البطاقات", icon: "💳", color: "#6d28d9", soft: "#f5f3ff", border: "#ddd6fe", fields: [
       { key: "mada", label: "مدى (الفعلي)", type: "number" },
       { key: "visa", label: "فيزا", type: "number" },
       { key: "mastercard", label: "ماستركارد", type: "number" },
@@ -1633,77 +1633,104 @@ function EntryTab({ currentUser, meta, users }) {
 
   return (
     <div>
-      <div style={cardStyle} className="no-print">
-        <div style={cardTitle}>{editId ? "✏️ تعديل وردية" : "📝 وردية جديدة"}</div>
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={smallLabel}>الفرع {restrictedBranches && restrictedBranches.length > 1 ? "(معيّن على أكتر من فرع — اختار اللي شغال فيه دلوقتي)" : ""}</label>
-            <select value={form.branch} onChange={(e) => set("branch", e.target.value)} disabled={branchSelectDisabled} style={inputStyle2}>
-              {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-            </select>
-          </div>
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={smallLabel}>الوردية</label>
-            <select value={form.shiftLabel} onChange={(e) => set("shiftLabel", e.target.value)} style={inputStyle2}>
-              {meta.shifts.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={smallLabel}>التاريخ</label>
-            <input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} style={inputStyle2} />
-          </div>
-          <div style={{ flex: "1 1 200px" }}>
-            <label style={smallLabel}>
-              رقم السند {editId ? "" : "(تلقائي)"}
-              {canOverrideReceipt && !editId && (
-                <span onClick={() => setManualReceipt((v) => !v)} style={{ marginRight: 8, color: C.blue, cursor: "pointer", fontWeight: 700, fontSize: 11.5 }}>
-                  {manualReceipt ? "رجوع للتلقائي" : "إدخال يدوي"}
-                </span>
-              )}
-            </label>
-            {editId || (canOverrideReceipt && manualReceipt) ? (
-              <input value={form.receiptNo} onChange={(e) => set("receiptNo", e.target.value)} style={inputStyle2} placeholder={editId ? "" : "اكتب رقم السند يدويًا"} />
-            ) : (
-              <input value={editId ? form.receiptNo : "سيتولد تلقائيًا عند الحفظ"} disabled style={{ ...inputStyle2, color: C.muted, fontStyle: "italic" }} />
-            )}
-          </div>
-          <div style={{ flex: "1 1 200px" }}>
-            <label style={smallLabel}>اسم الكاشير</label>
-            {currentUser.role === "cashier" ? (
-              <input value={form.cashierName} disabled style={inputStyle2} />
-            ) : (
-              <select value={form.cashierName} onChange={(e) => set("cashierName", e.target.value)} style={inputStyle2}>
-                <option value="">اختر كاشير</option>
-                {cashierOptions.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
-                {form.cashierName && !cashierOptions.some((c) => c.name === form.cashierName) && (
-                  <option value={form.cashierName}>{form.cashierName} (يدوي)</option>
-                )}
-              </select>
-            )}
-          </div>
+      <div style={{
+        ...cardStyle, background: "linear-gradient(135deg,#0f2557,#1d4ed8)", border: "none",
+        boxShadow: "0 10px 30px rgba(15,37,87,0.25)",
+      }} className="no-print">
+        <div style={{ fontWeight: 800, fontSize: 15.5, color: "#fff", marginBottom: 2, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{
+            width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.15)",
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
+          }}>{editId ? "✏️" : "📝"}</span>
+          {editId ? "تعديل وردية" : "وردية جديدة"}
         </div>
+        <div style={{ fontSize: 12, color: "#c7d5f5", marginBottom: 18 }}>سجّل بيانات الوردية بدقة — الحساب هيتم تلقائيًا تحت</div>
 
-        {FIELD_GROUPS.map((grp) => (
-          <div key={grp.title} style={{ marginBottom: 16 }}>
-            <div style={{ fontWeight: 700, fontSize: 13.5, color: C.navy, marginBottom: 8, borderBottom: "1px solid " + C.border, paddingBottom: 5 }}>{grp.title}</div>
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              {grp.fields.map((f) => (
-                <div key={f.key} style={{ flex: f.full ? "1 1 100%" : "1 1 150px" }}>
-                  <label style={smallLabel}>{f.label}</label>
-                  <input type={f.type} step={f.type === "number" ? "0.01" : undefined} value={form[f.key]} onChange={(e) => set(f.key, e.target.value)} style={inputStyle2} />
-                </div>
-              ))}
+        <div style={{ background: "#fff", borderRadius: 14, padding: 18 }}>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 6 }}>
+            <div style={{ flex: "1 1 160px" }}>
+              <label style={smallLabel}>الفرع {restrictedBranches && restrictedBranches.length > 1 ? "(معيّن على أكتر من فرع — اختار اللي شغال فيه دلوقتي)" : ""}</label>
+              <select value={form.branch} onChange={(e) => set("branch", e.target.value)} disabled={branchSelectDisabled} style={inputStyle2}>
+                {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <label style={smallLabel}>الوردية</label>
+              <select value={form.shiftLabel} onChange={(e) => set("shiftLabel", e.target.value)} style={inputStyle2}>
+                {meta.shifts.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: "1 1 160px" }}>
+              <label style={smallLabel}>التاريخ</label>
+              <input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} style={inputStyle2} />
+            </div>
+            <div style={{ flex: "1 1 200px" }}>
+              <label style={smallLabel}>
+                رقم السند {editId ? "" : "(تلقائي)"}
+                {canOverrideReceipt && !editId && (
+                  <span onClick={() => setManualReceipt((v) => !v)} style={{ marginRight: 8, color: C.blue, cursor: "pointer", fontWeight: 700, fontSize: 11.5 }}>
+                    {manualReceipt ? "رجوع للتلقائي" : "إدخال يدوي"}
+                  </span>
+                )}
+              </label>
+              {editId || (canOverrideReceipt && manualReceipt) ? (
+                <input value={form.receiptNo} onChange={(e) => set("receiptNo", e.target.value)} style={inputStyle2} placeholder={editId ? "" : "اكتب رقم السند يدويًا"} />
+              ) : (
+                <input value={editId ? form.receiptNo : "سيتولد تلقائيًا عند الحفظ"} disabled style={{ ...inputStyle2, color: C.muted, fontStyle: "italic" }} />
+              )}
+            </div>
+            <div style={{ flex: "1 1 200px" }}>
+              <label style={smallLabel}>اسم الكاشير</label>
+              {currentUser.role === "cashier" ? (
+                <input value={form.cashierName} disabled style={inputStyle2} />
+              ) : (
+                <select value={form.cashierName} onChange={(e) => set("cashierName", e.target.value)} style={inputStyle2}>
+                  <option value="">اختر كاشير</option>
+                  {cashierOptions.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  {form.cashierName && !cashierOptions.some((c) => c.name === form.cashierName) && (
+                    <option value={form.cashierName}>{form.cashierName} (يدوي)</option>
+                  )}
+                </select>
+              )}
             </div>
           </div>
-        ))}
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button onClick={save} disabled={saving} style={{ ...smallBtn, padding: "11px 26px", fontSize: 15 }}>
-            {saving ? "جارِ الحفظ..." : editId ? "💾 حفظ التعديل" : "💾 حفظ الوردية"}
-          </button>
-          {editId && <button onClick={cancelEdit} style={ghostBtn}>إلغاء</button>}
+          {FIELD_GROUPS.map((grp) => (
+            <div key={grp.title} style={{
+              marginTop: 18, background: grp.soft, border: "1px solid " + grp.border, borderRadius: 12, padding: "14px 16px",
+            }}>
+              <div style={{
+                fontWeight: 800, fontSize: 13.5, color: grp.color, marginBottom: 12,
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                <span style={{
+                  width: 26, height: 26, borderRadius: 7, background: "#fff", display: "flex",
+                  alignItems: "center", justifyContent: "center", fontSize: 13, boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                }}>{grp.icon}</span>
+                {grp.title}
+              </div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                {grp.fields.map((f) => (
+                  <div key={f.key} style={{ flex: f.full ? "1 1 100%" : "1 1 150px" }}>
+                    <label style={smallLabel}>{f.label}</label>
+                    <input type={f.type} step={f.type === "number" ? "0.01" : undefined} value={form[f.key]} onChange={(e) => set(f.key, e.target.value)} style={{ ...inputStyle2, background: "#fff" }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 20 }}>
+            <button onClick={save} disabled={saving} style={{
+              padding: "13px 30px", fontSize: 15.5, fontWeight: 800, color: "#fff", border: "none", borderRadius: 10,
+              background: "linear-gradient(135deg,#1d4ed8,#0f2557)", cursor: "pointer", boxShadow: "0 8px 18px rgba(29,78,216,0.28)",
+            }}>
+              {saving ? "جارِ الحفظ..." : editId ? "💾 حفظ التعديل" : "💾 حفظ الوردية"}
+            </button>
+            {editId && <button onClick={cancelEdit} style={ghostBtn}>إلغاء</button>}
+          </div>
+          {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
         </div>
-        {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
       </div>
 
       <div style={cardStyle} className="no-print">
@@ -2442,7 +2469,7 @@ function CustodyReviewTab({ currentUser, users, institutionName }) {
   return <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} institutionName={institutionName} />;
 }
 
-function ExpenseRequestTab({ currentUser, institutionName }) {
+function ExpenseRequestTab({ currentUser, institutionName, users }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
   const [treasuries, setTreasuries] = useState([]);
   const [myRequests, setMyRequests] = useState([]);
@@ -2453,6 +2480,7 @@ function ExpenseRequestTab({ currentUser, institutionName }) {
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [lastSubmitted, setLastSubmitted] = useState(null); // آخر طلب اتبعت، عشان نعرض زرار مراسلة المدير بيه
 
   useEffect(() => {
     const unsub = TREASURIES_COL.onSnapshot((snap) => {
@@ -2473,6 +2501,17 @@ function ExpenseRequestTab({ currentUser, institutionName }) {
     return unsub;
   }, [institutionId, currentUser.id]);
 
+  // إيميلات المدير المالي/الأدمن اللي هيراجعوا الطلب — بنجمعهم من قائمة المستخدمين
+  const managerEmails = (users || []).filter((u) => (u.role === "financial_manager" || u.role === "admin") && u.email).map((u) => u.email);
+
+  function buildMailtoLink(req) {
+    if (managerEmails.length === 0) return null;
+    const treasuryName = treasuries.find((t) => t.id === req.treasuryId)?.name || "";
+    const subject = `طلب صرف جديد من ${currentUser.name} — ${fmt(req.amount)} ر.س`;
+    const body = `طلب صرف جديد يحتاج مراجعتك:\n\nمقدَّم من: ${currentUser.name} (${ROLE_LABELS[currentUser.role]})\nالمبلغ: ${fmt(req.amount)} ر.س\nالخزينة: ${treasuryName}\nالتاريخ: ${req.date}\nالفئة: ${req.category || "بدون تصنيف"}\nالبيان: ${req.description}\n\nراجع الطلب واعتمده من التطبيق: صفحة "✅ اعتماد الصرف".`;
+    return "mailto:" + managerEmails.join(",") + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+  }
+
   async function submitRequest() {
     const amt = Number(amount);
     if (!amt || amt <= 0) { setMsg("أدخل مبلغ صحيح أكبر من صفر"); return; }
@@ -2480,12 +2519,14 @@ function ExpenseRequestTab({ currentUser, institutionName }) {
     if (!description.trim()) { setMsg("اكتب سبب/بيان الصرف"); return; }
     setSaving(true); setMsg("");
     try {
-      await EXPENSE_REQUESTS_COL.add({
+      const payload = {
         treasuryId, amount: amt, date, category: category || "", description: description.trim(),
         institutionId, status: "pending",
         requestedById: currentUser.id, requestedBy: currentUser.name, requestedByRole: currentUser.role,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+      await EXPENSE_REQUESTS_COL.add(payload);
+      setLastSubmitted(payload);
       setAmount(""); setDescription(""); setCategory("");
       setMsg("✅ تم إرسال طلب الصرف للمدير المالي للمراجعة");
     } catch (e) { setMsg("خطأ: " + e.message); }
@@ -2530,6 +2571,19 @@ function ExpenseRequestTab({ currentUser, institutionName }) {
           {saving ? "جارِ الإرسال..." : "📤 إرسال طلب الصرف"}
         </button>
         {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+        {lastSubmitted && (
+          managerEmails.length > 0 ? (
+            <div style={{ marginTop: 12, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 14px" }}>
+              <div style={{ fontSize: 12.5, color: C.navy, marginBottom: 8 }}>عايز تأكد وصول الطلب؟ راسل المدير المالي بالإيميل مباشرة (هيفتحلك تطبيق الإيميل عندك برسالة جاهزة):</div>
+              <a href={buildMailtoLink(lastSubmitted)} style={{
+                display: "inline-flex", alignItems: "center", gap: 6, background: C.blue, color: "#fff",
+                borderRadius: 20, padding: "7px 16px", fontSize: 13, fontWeight: 700, textDecoration: "none",
+              }}>📧 راسل المدير المالي بالطلب</a>
+            </div>
+          ) : (
+            <div style={{ marginTop: 10, fontSize: 11.5, color: C.muted }}>ملاحظة: لسه محدّش من المدير المالي/الأدمن عنده إيميل مسجّل — أضيفه من الإعدادات ↦ إدارة المستخدمين عشان زرار المراسلة يظهر.</div>
+          )
+        )}
       </div>
 
       <div style={cardStyle}>
