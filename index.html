@@ -1038,7 +1038,7 @@ function App() {
     if (!currentUser) { setMeta(null); return; }
     const instId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
     const unsub = instMetaDoc(instId).onSnapshot((doc) => {
-      if (doc.exists) { setMeta({ sections: [], ...doc.data() }); }
+      if (doc.exists) { setMeta({ sections: [], cashierNames: [], ...doc.data() }); }
       else {
         const seed = { branches: DEFAULT_BRANCHES, shifts: DEFAULT_SHIFTS, sections: [] };
         instMetaDoc(instId).set(seed);
@@ -1456,8 +1456,17 @@ function EntryTab({ currentUser, meta, users }) {
   function set(key, val) { setForm((f) => ({ ...f, [key]: val })); }
 
   const cashierOptions = useMemo(() => {
-    return users.filter((u) => u.role === "cashier" && (!form.branch || userBranches(u).includes(form.branch)));
-  }, [users, form.branch]);
+    const fromAccounts = users
+      .filter((u) => u.role === "cashier" && (!form.branch || userBranches(u).includes(form.branch)))
+      .map((u) => ({ id: u.id, name: u.name }));
+    const fromNames = (meta.cashierNames || []).map((n) => ({ id: "name_" + n, name: n }));
+    const seen = new Set();
+    return [...fromAccounts, ...fromNames].filter((c) => {
+      if (seen.has(c.name)) return false;
+      seen.add(c.name);
+      return true;
+    });
+  }, [users, form.branch, meta.cashierNames]);
 
   function canEditRow(r) {
     if (currentUser.role === "admin" || currentUser.role === "accountant") return true;
@@ -4869,6 +4878,7 @@ function SettingsTab({ meta, users, allUsers, currentUser }) {
       <BranchTreeSettings meta={meta} institutionId={institutionId} />
       <SectionsSettings meta={meta} institutionId={institutionId} />
       <ShiftsSettings meta={meta} institutionId={institutionId} />
+      <CashierNamesSettings meta={meta} institutionId={institutionId} />
       <RolePermissionsSettings meta={meta} institutionId={institutionId} />
       <UsersSettings users={users} allUsers={allUsers} meta={meta} institutionId={institutionId} />
     </div>
@@ -5220,6 +5230,51 @@ function BranchesSettings({ meta, institutionId }) {
         placeholder={"أملج\nالرايس\nينبع الصناعية"} style={{ ...inputStyle2, resize: "vertical", marginBottom: 10 }} />
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <button onClick={addBulk} style={smallBtn}>➕ إضافة كل الفروع</button>
+        {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+/* ============ أسماء الكاشير البسيطة: بدون حساب دخول، بس أسماء تظهر في قائمة اختيار الكاشير وقت تسجيل الوردية ============ */
+function CashierNamesSettings({ meta, institutionId }) {
+  const [bulkText, setBulkText] = useState("");
+  const [msg, setMsg] = useState("");
+  const names = meta.cashierNames || [];
+
+  async function addBulk() {
+    const newNames = Array.from(new Set(
+      bulkText.split("\n").map((s) => s.trim()).filter(Boolean)
+    )).filter((n) => !names.includes(n));
+    if (newNames.length === 0) { setMsg("لا يوجد أسماء جديدة لإضافتها"); return; }
+    await instMetaDoc(institutionId).update({ cashierNames: firebase.firestore.FieldValue.arrayUnion(...newNames) });
+    setBulkText("");
+    setMsg("✅ تمت إضافة " + newNames.length + " اسم");
+  }
+  async function removeName(name) {
+    if (!confirm(`هل تريد حذف اسم "${name}"؟`)) return;
+    await instMetaDoc(institutionId).update({ cashierNames: firebase.firestore.FieldValue.arrayRemove(name) });
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>🧑‍💼 أسماء كاشير بدون حساب دخول</div>
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+        لو عندك كاشير مش محتاج يدخل بحسابه بنفسه (حد تاني بيسجّل الوردية نيابة عنه)، ضيف اسمه هنا بس — هيظهر في قائمة اختيار "اسم الكاشير" وقت تسجيل الوردية من غير ما تحتاج تعمله حساب دخول كامل (اسم مستخدم وكلمة مرور).
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {names.map((n) => (
+          <div key={n} style={{ background: C.blueSoft, borderRadius: 20, padding: "6px 12px", fontSize: 13.5, display: "flex", alignItems: "center", gap: 8, color: C.navy, fontWeight: 600 }}>
+            {n}<span onClick={() => removeName(n)} style={{ cursor: "pointer", color: C.danger, fontWeight: 800 }}>×</span>
+          </div>
+        ))}
+        {names.length === 0 && <div style={{ color: "#9ca3af", fontSize: 13 }}>لا يوجد أسماء مضافة بعد</div>}
+      </div>
+      <label style={smallLabel}>إضافة أسماء جماعيًا (اكتب اسم في كل سطر)</label>
+      <textarea value={bulkText} onChange={(e) => setBulkText(e.target.value)} rows={4}
+        placeholder={"محمد أحمد\nخالد سالم"} style={{ ...inputStyle2, resize: "vertical", marginBottom: 10 }} />
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button onClick={addBulk} style={smallBtn}>➕ إضافة كل الأسماء</button>
         {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</span>}
       </div>
     </div>
