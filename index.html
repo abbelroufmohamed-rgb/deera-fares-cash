@@ -455,18 +455,35 @@ function CustodyHolderTab({ currentUser, institutionName }) {
   function remainingByLog(c, expenses) {
     return (Number(c.amount) || 0) - loggedTotal(expenses);
   }
+  /* العهدة القديمة (من قبل هذا التحديث) مفيهاش amountCash/amountBank — بنعتبرها كلها نقدي زي ما كانت شغالة قبل كده */
+  function custodyCashAmount(c) {
+    return c.amountCash !== undefined ? Number(c.amountCash) || 0 : (Number(c.amount) || 0);
+  }
+  function custodyBankAmount(c) {
+    return c.amountBank !== undefined ? Number(c.amountBank) || 0 : 0;
+  }
+  /* المصروف القديم (بدون paymentMethod) بنعتبره نقدي بشكل افتراضي للتوافق مع التسجيلات القديمة */
+  function loggedByMethod(expenses, method) {
+    return (expenses || []).filter((x) => (x.paymentMethod || "cash") === method).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  }
+  function remainingCashByLog(c, expenses) {
+    return custodyCashAmount(c) - loggedByMethod(expenses, "cash");
+  }
+  function remainingBankByLog(c, expenses) {
+    return custodyBankAmount(c) - loggedByMethod(expenses, "network");
+  }
 
-  function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null }; }
+  function getForm(id) { return forms[id] || { amount: "", description: "", supplierName: "", category: "", paymentMethod: "cash", date: todayStr(), photo: null }; }
   function setForm(id, key, val) {
     setForms((f) => ({
       ...f,
-      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null }), [key]: val },
+      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", category: "", paymentMethod: "cash", date: todayStr(), photo: null }), [key]: val },
     }));
   }
   function setFormMulti(id, patch) {
     setForms((f) => ({
       ...f,
-      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null }), ...patch },
+      [id]: { ...(f[id] || { amount: "", description: "", supplierName: "", category: "", paymentMethod: "cash", date: todayStr(), photo: null }), ...patch },
     }));
   }
 
@@ -528,21 +545,28 @@ function CustodyHolderTab({ currentUser, institutionName }) {
     const amt = Number(f.amount);
     if (!amt || amt <= 0) { setMsg("أدخل مبلغ صحيح أكبر من صفر"); return; }
     if (!f.description.trim()) { setMsg("اكتب وش هذا المصروف"); return; }
+    const method = f.paymentMethod || "cash";
+    const log = expensesByCustody[c.id] || [];
+    const availableForMethod = method === "cash" ? remainingCashByLog(c, log) : remainingBankByLog(c, log);
+    if (amt > availableForMethod + 0.01) {
+      setMsg((method === "cash" ? "الرصيد النقدي" : "الرصيد البنكي/الشبكة") + " المتاح عندك " + fmt(availableForMethod) + " ر.س بس — قلّل المبلغ أو غيّر طريقة الصرف");
+      return;
+    }
     setSavingId(c.id); setMsg("");
     try {
       const entry = {
         amount: amt, description: f.description.trim(), supplierName: (f.supplierName || "").trim(),
-        category: f.category || "", date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null,
+        category: f.category || "", paymentMethod: method, date: f.date, photoUrl: f.photo || null, fileType: f.photo ? (f.fileType || "image") : null,
         enteredAt: Date.now(), enteredBy: currentUser.name,
       };
       await custodyExpensesCol(c.id).add(entry);
       await NOTIF_COL.add({
         type: "custody_expense", custodyId: c.id, employeeName: currentUser.name, amount: amt,
         date: f.date, branch: null, institutionId,
-        message: `${currentUser.name} سجّل مصروف عهدة بقيمة ${fmt(amt)} ر.س` + (f.category ? ` — ${f.category}` : "") + (f.supplierName ? ` — ${f.supplierName}` : "") + (entry.photoUrl ? " (مرفق إثبات)" : ""),
+        message: `${currentUser.name} سجّل مصروف عهدة بقيمة ${fmt(amt)} ر.س (${method === "cash" ? "نقدي" : "شبكة/بنك"})` + (f.category ? ` — ${f.category}` : "") + (f.supplierName ? ` — ${f.supplierName}` : "") + (entry.photoUrl ? " (مرفق إثبات)" : ""),
         createdAt: firebase.firestore.FieldValue.serverTimestamp(), readBy: [],
       }).catch(() => {});
-      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", category: "", date: todayStr(), photo: null, fileType: null, attaching: false } }));
+      setForms((fs) => ({ ...fs, [c.id]: { amount: "", description: "", supplierName: "", category: "", paymentMethod: "cash", date: todayStr(), photo: null, fileType: null, attaching: false } }));
       setMsg(entry.photoUrl ? "✅ تم تسجيل المصروف وحفظ المرفق بنجاح — شوفه في جدول \"مصروفاتك المسجّلة\" تحت" : "✅ تم تسجيل المصروف بنجاح");
     } catch (e) { setMsg("خطأ: " + e.message); }
     setSavingId(null);
@@ -706,6 +730,10 @@ function CustodyHolderTab({ currentUser, institutionName }) {
         const log = expensesByCustody[c.id] || [];
         const total = loggedTotal(log);
         const remLog = remainingByLog(c, log);
+        const cashAmt = custodyCashAmount(c);
+        const bankAmt = custodyBankAmount(c);
+        const remCash = remainingCashByLog(c, log);
+        const remBank = remainingBankByLog(c, log);
         const oldReceipts = c.receipts || [];
         const f = getForm(c.id);
         return (
@@ -718,9 +746,25 @@ function CustodyHolderTab({ currentUser, institutionName }) {
               <button onClick={() => setReportId(c.id)} style={ghostBtn}>🖨️ تقرير العهدة</button>
             </div>
 
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+              <div style={{ flex: "1 1 220px", background: C.blueSoft, borderRadius: 10, padding: "10px 13px" }}>
+                <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 4 }}>💵 الرصيد النقدي (كاش)</div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: C.muted }}>استلمت {fmt(cashAmt)}</span>
+                  <span style={{ fontSize: 15, fontWeight: 800, color: remCash < 0 ? C.danger : C.navy }}>الباقي {fmt(remCash)}</span>
+                </div>
+              </div>
+              <div style={{ flex: "1 1 220px", background: C.blueSoft, borderRadius: 10, padding: "10px 13px" }}>
+                <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 4 }}>💳 الرصيد البنكي (شبكة)</div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: C.muted }}>استلمت {fmt(bankAmt)}</span>
+                  <span style={{ fontSize: 15, fontWeight: 800, color: remBank < 0 ? C.danger : C.navy }}>الباقي {fmt(remBank)}</span>
+                </div>
+              </div>
+            </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
               <div style={{ flex: "1 1 150px", background: C.blueSoft, borderRadius: 10, padding: "10px 13px" }}>
-                <div style={{ fontSize: 11.5, color: C.muted }}>كم استلمت</div>
+                <div style={{ fontSize: 11.5, color: C.muted }}>كم استلمت إجمالًا</div>
                 <div style={{ fontSize: 17, fontWeight: 800, color: C.navy }}>{fmt(c.amount)} ر.س</div>
               </div>
               <div style={{ flex: "1 1 150px", background: C.blueSoft, borderRadius: 10, padding: "10px 13px" }}>
@@ -745,6 +789,13 @@ function CustodyHolderTab({ currentUser, institutionName }) {
               <div style={{ fontWeight: 700, fontSize: 13.5, color: C.navy, marginBottom: 10 }}>➕ سجّل مصروف جديد</div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
                 <div><label style={smallLabel}>المبلغ</label><input type="number" step="0.01" value={f.amount} onChange={(e) => setForm(c.id, "amount", e.target.value)} style={{ ...inputStyle2, width: 120 }} /></div>
+                <div>
+                  <label style={smallLabel}>طريقة الصرف</label>
+                  <select value={f.paymentMethod} onChange={(e) => setForm(c.id, "paymentMethod", e.target.value)} style={inputStyle2}>
+                    <option value="cash">💵 كاش (نقدي)</option>
+                    <option value="network">💳 شبكة (بنكي)</option>
+                  </select>
+                </div>
                 <div><label style={smallLabel}>التاريخ</label><input type="date" value={f.date} onChange={(e) => setForm(c.id, "date", e.target.value)} style={inputStyle2} /></div>
                 <div style={{ flex: "1 1 160px" }}><label style={smallLabel}>وش صرفته؟</label><input value={f.description} onChange={(e) => setForm(c.id, "description", e.target.value)} style={inputStyle2} placeholder="مثال: أدوات نظافة، صيانة ماكينة..." /></div>
                 <div style={{ flex: "1 1 150px" }}><label style={smallLabel}>اسم المورد / الجهة</label><input value={f.supplierName} onChange={(e) => setForm(c.id, "supplierName", e.target.value)} style={inputStyle2} placeholder="مثال: مؤسسة النور للتجارة" /></div>
@@ -777,12 +828,13 @@ function CustodyHolderTab({ currentUser, institutionName }) {
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: C.navy, marginBottom: 8 }}>مصروفاتك المسجّلة ({log.length})</div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={tblStyle}>
-                    <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>الفئة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th><th style={th}></th></tr></thead>
+                    <thead><tr><th style={th}>التاريخ</th><th style={th}>المورد</th><th style={th}>الطريقة</th><th style={th}>الفئة</th><th style={th}>البيان</th><th style={th}>المبلغ</th><th style={th}>مرفق</th><th style={th}></th></tr></thead>
                     <tbody>
                       {[...log].reverse().map((e) => (
                         <tr key={e.id}>
                           <td style={td}>{e.date}</td>
                           <td style={td}>{e.supplierName || "—"}</td>
+                          <td style={td}>{(e.paymentMethod || "cash") === "network" ? "💳 شبكة" : "💵 كاش"}</td>
                           <td style={td}>{e.category || "—"}</td>
                           <td style={td}>{e.description}</td>
                           <td style={td}>{fmt(e.amount)}</td>
@@ -3350,7 +3402,8 @@ function TreasuryPayroll({ currentUser, treasuries, employees, payrollRecords, c
 }
 
 function PayrollAdvances({ currentUser, employees, treasuries, custodiesByEmployee, custodyOutstanding, institutionId }) {
-  const [amounts, setAmounts] = useState({}); // { employeeId: amount }
+  const [amountsCash, setAmountsCash] = useState({}); // { employeeId: cashAmount }
+  const [amountsBank, setAmountsBank] = useState({}); // { employeeId: bankAmount }
   const [treasuryChoice, setTreasuryChoice] = useState(treasuries[0]?.id || "");
   const [note, setNote] = useState({}); // { employeeId: note }
   const [giving, setGiving] = useState(null);
@@ -3358,13 +3411,15 @@ function PayrollAdvances({ currentUser, employees, treasuries, custodiesByEmploy
   const [expanded, setExpanded] = useState(null);
 
   async function giveAdvance(emp) {
-    const amt = Number(amounts[emp.id]);
-    if (!amt || amt <= 0) { setMsg("أدخل مبلغ سلفة صحيح للموظف " + emp.name); return; }
+    const cashPart = Number(amountsCash[emp.id]) || 0;
+    const bankPart = Number(amountsBank[emp.id]) || 0;
+    const amt = cashPart + bankPart;
+    if (!amt || amt <= 0) { setMsg("أدخل مبلغ سلفة نقدي أو بنكي صحيح للموظف " + emp.name); return; }
     if (!treasuryChoice) { setMsg("اختر الخزينة اللي هتصرف منها السلفة"); return; }
     setGiving(emp.id); setMsg("");
     try {
       const custodyRef = await CUSTODIES_COL.add({
-        treasuryId: treasuryChoice, employeeName: emp.name, amount: amt, date: todayStr(),
+        treasuryId: treasuryChoice, employeeName: emp.name, amount: amt, amountCash: cashPart, amountBank: bankPart, date: todayStr(),
         description: "سلفة" + (note[emp.id] ? " — " + note[emp.id] : ""), kind: "advance",
         institutionId, settlements: [], createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
@@ -3375,7 +3430,8 @@ function PayrollAdvances({ currentUser, employees, treasuries, custodiesByEmploy
         enteredBy: currentUser.name, enteredByRole: currentUser.role,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
-      setAmounts((a) => ({ ...a, [emp.id]: "" }));
+      setAmountsCash((a) => ({ ...a, [emp.id]: "" }));
+      setAmountsBank((a) => ({ ...a, [emp.id]: "" }));
       setNote((n) => ({ ...n, [emp.id]: "" }));
       setExpanded(null);
       setMsg("✅ تم صرف سلفة " + fmt(amt) + " ر.س لـ" + emp.name + " — هتتخصم تلقائيًا من راتبه القادم");
@@ -3399,7 +3455,7 @@ function PayrollAdvances({ currentUser, employees, treasuries, custodiesByEmploy
         {msg && <div style={{ fontSize: 13, marginBottom: 12, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
         <div style={{ overflowX: "auto" }}>
           <table style={tblStyle}>
-            <thead><tr><th style={th}>الموظف</th><th style={th}>سلفة قائمة حاليًا</th><th style={th}>مبلغ السلفة الجديدة</th><th style={th}></th></tr></thead>
+            <thead><tr><th style={th}>الموظف</th><th style={th}>سلفة قائمة حاليًا</th><th style={th}>💵 مبلغ نقدي</th><th style={th}>💳 مبلغ شبكة/بنك</th><th style={th}></th></tr></thead>
             <tbody>
               {employees.map((emp) => {
                 const outstanding = custodyOutstanding[emp.name] || 0;
@@ -3409,8 +3465,12 @@ function PayrollAdvances({ currentUser, employees, treasuries, custodiesByEmploy
                       <td style={{ ...td, fontWeight: 700 }}>{emp.name}</td>
                       <td style={{ ...td, color: outstanding > 0 ? C.danger : C.muted, fontWeight: outstanding > 0 ? 700 : 400 }}>{outstanding > 0 ? fmt(outstanding) : "—"}</td>
                       <td style={td}>
-                        <input type="number" step="0.01" placeholder="0.00" value={amounts[emp.id] || ""}
-                          onChange={(e) => setAmounts((a) => ({ ...a, [emp.id]: e.target.value }))} style={{ ...inputStyle2, width: 110 }} />
+                        <input type="number" step="0.01" placeholder="0.00" value={amountsCash[emp.id] || ""}
+                          onChange={(e) => setAmountsCash((a) => ({ ...a, [emp.id]: e.target.value }))} style={{ ...inputStyle2, width: 100 }} />
+                      </td>
+                      <td style={td}>
+                        <input type="number" step="0.01" placeholder="0.00" value={amountsBank[emp.id] || ""}
+                          onChange={(e) => setAmountsBank((a) => ({ ...a, [emp.id]: e.target.value }))} style={{ ...inputStyle2, width: 100 }} />
                       </td>
                       <td style={td}>
                         <span onClick={() => setExpanded(expanded === emp.id ? null : emp.id)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700, marginLeft: 10 }}>
@@ -3423,7 +3483,7 @@ function PayrollAdvances({ currentUser, employees, treasuries, custodiesByEmploy
                     </tr>
                     {expanded === emp.id && (
                       <tr>
-                        <td colSpan={4} style={{ background: C.blueSoft, padding: 12 }}>
+                        <td colSpan={5} style={{ background: C.blueSoft, padding: 12 }}>
                           <label style={smallLabel}>سبب السلفة (اختياري)</label>
                           <input value={note[emp.id] || ""} onChange={(e) => setNote((n) => ({ ...n, [emp.id]: e.target.value }))}
                             style={{ ...inputStyle2, maxWidth: 320 }} placeholder="مثال: ظرف طارئ، مصاريف علاج..." />
@@ -3433,7 +3493,7 @@ function PayrollAdvances({ currentUser, employees, treasuries, custodiesByEmploy
                   </React.Fragment>
                 );
               })}
-              {employees.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد موظفين نشطين — أضفهم من "إدارة الموظفين" الأول</td></tr>}
+              {employees.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد موظفين نشطين — أضفهم من "إدارة الموظفين" الأول</td></tr>}
             </tbody>
           </table>
         </div>
@@ -3532,6 +3592,8 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institut
   const [toTreasuryId, setToTreasuryId] = useState(treasuries[1]?.id || treasuries[0]?.id || "");
   const [employeeName, setEmployeeName] = useState("");
   const [amount, setAmount] = useState("");
+  const [amountCash, setAmountCash] = useState("");
+  const [amountBank, setAmountBank] = useState("");
   const [date, setDate] = useState(todayStr());
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
@@ -3540,11 +3602,14 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institut
   const [freshVoucher, setFreshVoucher] = useState(null);
 
   async function save() {
-    const amt = Number(amount);
-    if (!amt || amt <= 0) { setMsg("أدخل مبلغ صحيح أكبر من صفر"); return; }
+    const isCustody = type === "custody_out";
+    const cashPart = Number(amountCash) || 0;
+    const bankPart = Number(amountBank) || 0;
+    const amt = isCustody ? (cashPart + bankPart) : Number(amount);
+    if (!amt || amt <= 0) { setMsg(isCustody ? "أدخل مبلغ نقدي أو بنكي أكبر من صفر" : "أدخل مبلغ صحيح أكبر من صفر"); return; }
     if (!treasuryId) { setMsg("اختر الخزينة"); return; }
     if (type === "transfer_out" && (!toTreasuryId || toTreasuryId === treasuryId)) { setMsg("اختر خزينة وجهة مختلفة عن المصدر"); return; }
-    if (type === "custody_out" && !employeeName) { setMsg("اختر أو اكتب اسم الموظف"); return; }
+    if (isCustody && !employeeName) { setMsg("اختر أو اكتب اسم الموظف"); return; }
 
     setSaving(true); setMsg("");
     try {
@@ -3556,9 +3621,10 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institut
         await TREASURY_TX_COL.add({ ...base, treasuryId: toTreasuryId, type: "transfer_in", amount: amt, relatedTreasuryId: treasuryId, transferGroupId });
         setMsg("✅ تم تسجيل التحويل بنجاح — السند جاهز تحت للطباعة");
         voucherTx = { id: outRef.id, treasuryId, type: "transfer_out", amount: amt, relatedTreasuryId: toTreasuryId, date, description };
-      } else if (type === "custody_out") {
+      } else if (isCustody) {
         const custodyRef = await CUSTODIES_COL.add({
-          treasuryId, employeeName, amount: amt, date, description, institutionId, settlements: [], createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          treasuryId, employeeName, amount: amt, amountCash: cashPart, amountBank: bankPart,
+          date, description, institutionId, settlements: [], createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
         const txRef = await TREASURY_TX_COL.add({ ...base, treasuryId, type: "custody_out", amount: amt, employeeName, custodyId: custodyRef.id });
         setMsg("✅ تم تسجيل العهدة بنجاح — السند جاهز تحت للطباعة");
@@ -3568,7 +3634,7 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institut
         setMsg("✅ تم تسجيل الحركة بنجاح — السند جاهز تحت للطباعة");
         voucherTx = { id: txRef.id, treasuryId, type, amount: amt, category: category || "", date, description };
       }
-      setAmount(""); setDescription(""); setEmployeeName(""); setCategory("");
+      setAmount(""); setAmountCash(""); setAmountBank(""); setDescription(""); setEmployeeName(""); setCategory("");
       const voucherNo = await assignVoucherNoIfMissing(voucherTx, institutionId);
       setFreshVoucher({ ...voucherTx, voucherNo, enteredBy: currentUser.name });
     } catch (e) { setMsg("خطأ: " + e.message); }
@@ -3618,8 +3684,26 @@ function TreasuryNewTx({ currentUser, treasuries, users, institutionId, institut
           </div>
         )}
         <div style={{ flex: "1 1 160px" }}>
-          <label style={smallLabel}>المبلغ</label>
-          <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} style={inputStyle2} />
+          {type === "custody_out" ? (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <label style={smallLabel}>💵 مبلغ نقدي (كاش)</label>
+                <input type="number" step="0.01" value={amountCash} onChange={(e) => setAmountCash(e.target.value)} style={{ ...inputStyle2, width: 140 }} />
+              </div>
+              <div>
+                <label style={smallLabel}>💳 مبلغ عن طريق الشبكة/البنك</label>
+                <input type="number" step="0.01" value={amountBank} onChange={(e) => setAmountBank(e.target.value)} style={{ ...inputStyle2, width: 140 }} />
+              </div>
+              {(Number(amountCash) > 0 || Number(amountBank) > 0) && (
+                <div style={{ fontSize: 12, color: C.muted, alignSelf: "center" }}>الإجمالي: {fmt((Number(amountCash) || 0) + (Number(amountBank) || 0))} ر.س</div>
+              )}
+            </div>
+          ) : (
+            <>
+              <label style={smallLabel}>المبلغ</label>
+              <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} style={inputStyle2} />
+            </>
+          )}
         </div>
         <div style={{ flex: "1 1 160px" }}>
           <label style={smallLabel}>التاريخ</label>
