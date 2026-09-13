@@ -131,11 +131,13 @@ function instMetaDoc(institutionId) {
 
 const ROLE_LABELS = {
   admin: "أدمن",
-  financial_manager: "مدير مالي",
+  financial_manager: "مدير مالي (مسؤول الصرف)",
   accountant: "محاسب",
   branch_manager: "مدير فرع",
   cashier: "كاشير",
   custody_holder: "أمين عهدة",
+  financial_reviewer: "مراجع مالي",
+  general_manager: "مدير عام",
 };
 
 /* ============ الصلاحيات الافتراضية لكل تبويب (قابلة للتخصيص من الإعدادات لكل مؤسسة) ============ */
@@ -144,16 +146,22 @@ const TAB_DEFS = [
   { id: "entry", icon: "entry", label: "تسجيل وردية" },
   { id: "report", icon: "report", label: "التقارير" },
   { id: "expenseRequest", icon: "send", label: "طلب صرف" },
+  { id: "approvalAccountant", icon: "send", label: "اعتماد المحاسب" },
+  { id: "approvalReviewer", icon: "send", label: "اعتماد المراجع المالي" },
+  { id: "approvalGM", icon: "send", label: "اعتماد المدير العام" },
   { id: "custodyReview", icon: "bank", label: "عهد الموظفين" },
   { id: "treasury", icon: "bank", label: "الخزينة" },
   { id: "settings", icon: "settings", label: "الإعدادات" },
 ];
-const CONFIGURABLE_ROLES = ["admin", "financial_manager", "accountant", "branch_manager", "cashier", "custody_holder"];
+const CONFIGURABLE_ROLES = ["admin", "financial_manager", "accountant", "branch_manager", "cashier", "custody_holder", "financial_reviewer", "general_manager"];
 const DEFAULT_TAB_PERMISSIONS = {
   fmDashboard: ["financial_manager", "admin"],
   entry: ["admin", "accountant", "branch_manager", "cashier"],
   report: ["admin", "accountant", "branch_manager", "cashier"],
-  expenseRequest: ["admin", "financial_manager", "accountant", "branch_manager"],
+  expenseRequest: ["admin", "financial_manager", "accountant", "branch_manager", "cashier", "custody_holder", "financial_reviewer", "general_manager"],
+  approvalAccountant: ["accountant", "admin"],
+  approvalReviewer: ["financial_reviewer", "admin"],
+  approvalGM: ["general_manager", "admin"],
   custodyReview: ["accountant"],
   treasury: ["admin", "financial_manager"],
   settings: ["admin"],
@@ -1077,6 +1085,86 @@ function AppLoadingScreen() {
   );
 }
 
+/* ============ شاشة تعيين كلمة المرور الذاتي: بتفتح من رابط خاص لكل موظف (؟setpass=userId)، من غير ما يحتاج يعرف كلمة مرور قديمة ============ */
+function SetPasswordScreen({ users, targetUserId, onDone, forced, onForcedComplete }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const targetUser = users.find((u) => u.id === targetUserId);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!password || password.length < 4) { setError("كلمة المرور لازم تكون 4 حروف/أرقام على الأقل"); return; }
+    if (password !== confirm) { setError("كلمة المرور والتأكيد مش متطابقين"); return; }
+    setSaving(true); setError("");
+    try {
+      const usersDoc = await USERS_DOC.get();
+      const list = usersDoc.exists ? (usersDoc.data().list || []) : [];
+      const idx = list.findIndex((u) => u.id === targetUserId);
+      if (idx === -1) { setError("الحساب ده مش موجود أو تم حذفه"); setSaving(false); return; }
+      const updatedUser = { ...list[idx], password, mustChangePassword: false };
+      list[idx] = updatedUser;
+      await USERS_DOC.set({ list });
+      if (forced && onForcedComplete) { onForcedComplete(updatedUser); return; }
+      setDone(true);
+    } catch (e) { setError("خطأ: " + e.message); }
+    setSaving(false);
+  }
+
+  return (
+    <div style={{
+      minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+      background: "radial-gradient(circle at 20% 20%, #1d4ed8 0%, #0f2557 45%, #081633 100%)", padding: 16,
+    }}>
+      <div style={{
+        background: "#fff", borderRadius: 20, padding: "40px 32px", width: 370, textAlign: "center",
+        boxShadow: "0 30px 70px rgba(3,10,30,0.5)",
+      }}>
+        {!targetUser ? (
+          <>
+            <div style={{ fontSize: 40, marginBottom: 10 }}>⚠️</div>
+            <h2 style={{ color: C.danger, fontSize: 17 }}>الرابط ده غير صالح</h2>
+            <div style={{ color: C.muted, fontSize: 13 }}>اطلب من المدير يرسلّك رابط جديد.</div>
+          </>
+        ) : done ? (
+          <>
+            <div style={{ fontSize: 40, marginBottom: 10 }}>✅</div>
+            <h2 style={{ color: C.success, fontSize: 17, marginBottom: 6 }}>تم تعيين كلمة مرورك بنجاح</h2>
+            <div style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>تقدر تسجّل دخول دلوقتي باسم المستخدم <b>{targetUser.username}</b> وكلمة المرور الجديدة.</div>
+            <button onClick={onDone} style={{
+              width: "100%", padding: "12px 0", background: "linear-gradient(135deg,#1d4ed8,#0f2557)",
+              color: "#fff", border: "none", borderRadius: 10, fontSize: 15, fontWeight: 800, cursor: "pointer",
+            }}>الذهاب لتسجيل الدخول</button>
+          </>
+        ) : (
+          <form onSubmit={submit}>
+            <div style={{
+              width: 56, height: 56, borderRadius: 14, margin: "0 auto 14px", background: "linear-gradient(135deg,#1d4ed8,#0f2557)",
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26,
+            }}>🔑</div>
+            <h2 style={{ color: C.navy, fontSize: 18, marginBottom: 4 }}>{forced ? "لازم تحط كلمة مرور جديدة" : "تعيين كلمة مرور جديدة"}</h2>
+            <div style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>
+              مرحبًا <b>{targetUser.name}</b> — {forced ? "دي أول مرة تدخل بيها، لازم تختار كلمة مرور جديدة خاصة بيك قبل ما تكمّل." : "اكتب كلمة مرور جديدة تحفظها لنفسك."}
+            </div>
+            <label style={smallLabel}>كلمة المرور الجديدة</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle2, marginBottom: 14 }} autoFocus />
+            <label style={smallLabel}>تأكيد كلمة المرور</label>
+            <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} style={inputStyle2} />
+            {error && <div style={{ color: C.danger, fontSize: 13, marginTop: 10 }}>⚠️ {error}</div>}
+            <button type="submit" disabled={saving} style={{
+              marginTop: 18, width: "100%", padding: "12px 0", background: "linear-gradient(135deg,#1d4ed8,#0f2557)",
+              color: "#fff", border: "none", borderRadius: 10, fontSize: 15, fontWeight: 800, cursor: "pointer",
+            }}>{saving ? "جارِ الحفظ..." : "حفظ كلمة المرور والدخول"}</button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ============ التطبيق الرئيسي ============ */
 /* ============ أيقونات SVG احترافية (نمط عالمي بسيط، بدل الإيموجي) ============ */
 const ICON_PATHS = {
@@ -1105,6 +1193,7 @@ function App() {
   const [institutions, setInstitutions] = useState(null);
   const [meta, setMeta] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
+  const [forceChangeUser, setForceChangeUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("entry");
 
@@ -1178,6 +1267,7 @@ function App() {
   }, [users]);
 
   function handleLogin(u) {
+    if (u.mustChangePassword) { setForceChangeUser(u); return; }
     const withInst = { ...u, institutionId: u.institutionId || DEFAULT_INSTITUTION_ID };
     setCurrentUser(withInst);
     localStorage.setItem("cashRecon-session", JSON.stringify(withInst));
@@ -1185,12 +1275,26 @@ function App() {
     else if (u.role === "financial_manager") setTab("fmDashboard");
     else setTab("entry");
   }
+  function handleForcedPasswordDone(updatedUser) {
+    setForceChangeUser(null);
+    handleLogin(updatedUser);
+  }
   function handleLogout() {
     setCurrentUser(null);
     localStorage.removeItem("cashRecon-session");
   }
 
   if (loading) return <AppLoadingScreen />;
+
+  const setpassUserId = new URLSearchParams(window.location.search).get("setpass");
+  if (setpassUserId) {
+    return <SetPasswordScreen users={users} targetUserId={setpassUserId} onDone={() => { window.history.replaceState({}, "", window.location.pathname); window.location.reload(); }} />;
+  }
+
+  if (forceChangeUser) {
+    return <SetPasswordScreen users={users} targetUserId={forceChangeUser.id} forced={true} onForcedComplete={handleForcedPasswordDone} />;
+  }
+
   if (!currentUser) return <LoginScreen users={users} onLogin={handleLogin} />;
 
   const institutionName = (institutions.find((i) => i.id === (currentUser.institutionId || DEFAULT_INSTITUTION_ID)) || {}).name || DEFAULT_INSTITUTION_NAME;
@@ -1204,6 +1308,7 @@ function App() {
 }
 
 function MainLayout({ currentUser, users, meta, institutions, institutionName, tab, setTab, onLogout }) {
+  const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
   const institutionUsers = users.filter((u) => (u.institutionId || DEFAULT_INSTITUTION_ID) === (currentUser.institutionId || DEFAULT_INSTITUTION_ID));
   const effectivePerms = { ...DEFAULT_TAB_PERMISSIONS, ...(meta.tabPermissions || {}) };
   const tabs = TAB_DEFS
@@ -1234,6 +1339,11 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
           ))}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+          <a href="https://abbelroufmohamed-rgb.github.io/deera-fares-warehouse/" target="_blank" rel="noreferrer" title="نظام إدارة المستودع" style={{
+            width: 34, height: 34, borderRadius: 8, background: "rgba(255,255,255,0.14)",
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16,
+            textDecoration: "none", cursor: "pointer",
+          }}>📦</a>
           {(currentUser.role === "admin" || currentUser.role === "accountant") && (
             <NotificationBell currentUser={currentUser} setTab={setTab} />
           )}
@@ -1256,6 +1366,15 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
         {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "expenseRequest" && (
           <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} users={institutionUsers} />
+        )}
+        {tab === "approvalAccountant" && (effectivePerms.approvalAccountant || []).includes(currentUser.role) && (
+          <ApprovalStageTab currentUser={currentUser} institutionId={institutionId} stageKey="accountant" nextStage="reviewer" stageLabel="اعتماد المحاسب" nextLabel="المراجع المالي" />
+        )}
+        {tab === "approvalReviewer" && (effectivePerms.approvalReviewer || []).includes(currentUser.role) && (
+          <ApprovalStageTab currentUser={currentUser} institutionId={institutionId} stageKey="reviewer" nextStage="gm" stageLabel="اعتماد المراجع المالي" nextLabel="المدير العام" />
+        )}
+        {tab === "approvalGM" && (effectivePerms.approvalGM || []).includes(currentUser.role) && (
+          <ApprovalStageTab currentUser={currentUser} institutionId={institutionId} stageKey="gm" nextStage="disbursement" stageLabel="اعتماد المدير العام" nextLabel="مسؤول الصرف" />
         )}
         {tab === "custodyReview" && (effectivePerms.custodyReview || []).includes(currentUser.role) && (
           <CustodyReviewTab currentUser={currentUser} users={institutionUsers} institutionName={institutionName} />
@@ -2641,6 +2760,107 @@ function CustodyReviewTab({ currentUser, users, institutionName }) {
   return <TreasuryCustody currentUser={currentUser} treasuries={treasuries} custodies={custodies} users={users} institutionName={institutionName} />;
 }
 
+/* ============ شاشة اعتماد عامة قابلة لإعادة الاستخدام لأي مرحلة من مراحل الاعتماد الثلاثة (محاسب/مراجع مالي/مدير عام) ============ */
+function ApprovalStageTab({ currentUser, institutionId, stageKey, nextStage, stageLabel, nextLabel }) {
+  const [requests, setRequests] = useState([]);
+  const [filterStatus, setFilterStatus] = useState("pending_here");
+  const [rejectingId, setRejectingId] = useState(null);
+  const [rejectNote, setRejectNote] = useState("");
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const unsub = EXPENSE_REQUESTS_COL.orderBy("createdAt", "desc").limit(200).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setRequests(data);
+    });
+    return unsub;
+  }, [institutionId]);
+
+  const filtered = requests.filter((r) => {
+    if (filterStatus === "pending_here") return r.status === "pending" && r.stage === stageKey;
+    if (filterStatus === "all") return true;
+    return r.status === filterStatus;
+  });
+  const pendingCount = requests.filter((r) => r.status === "pending" && r.stage === stageKey).length;
+
+  async function approve(r) {
+    setBusy(r.id); setMsg("");
+    try {
+      const approvals = [...(r.approvals || []), { stage: stageKey, by: currentUser.name, at: Date.now() }];
+      if (nextStage) {
+        await EXPENSE_REQUESTS_COL.doc(r.id).update({ stage: nextStage, approvals });
+        setMsg("✅ تم اعتماد الطلب — انتقل للمرحلة التالية: " + nextLabel);
+      } else {
+        // آخر مرحلة (مسؤول الصرف) — بيتعامل معاها TreasuryApprovals نفسها، الدالة دي مش بتوصل هنا لو nextStage فاضية
+        await EXPENSE_REQUESTS_COL.doc(r.id).update({ approvals });
+      }
+    } catch (e) { setMsg("خطأ: " + e.message); }
+    setBusy(null);
+  }
+
+  async function reject(r) {
+    if (!rejectNote.trim()) { setMsg("من فضلك اكتب سبب الرفض قبل التأكيد"); return; }
+    setBusy(r.id); setMsg("");
+    try {
+      await EXPENSE_REQUESTS_COL.doc(r.id).update({
+        status: "rejected", reviewedBy: currentUser.name, reviewedAt: firebase.firestore.FieldValue.serverTimestamp(), reviewNote: rejectNote,
+      });
+      setRejectingId(null); setRejectNote("");
+      setMsg("تم رفض الطلب");
+    } catch (e) { setMsg("خطأ: " + e.message); }
+    setBusy(null);
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardTitle}>✅ {stageLabel} {pendingCount > 0 && <span style={{ background: C.danger, color: "#fff", borderRadius: 20, padding: "2px 10px", fontSize: 12 }}>{pendingCount} قيد الانتظار</span>}</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        {[["pending_here", "بانتظار اعتمادي"], ["rejected", "مرفوضة"], ["all", "الكل"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilterStatus(k)} style={filterStatus === k ? smallBtn : ghostBtn}>{l}</button>
+        ))}
+      </div>
+      {msg && <div style={{ fontSize: 13, marginBottom: 12, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+      <div style={{ overflowX: "auto" }}>
+        <table style={tblStyle}>
+          <thead><tr><th style={th}>التاريخ</th><th style={th}>مقدَّم من</th><th style={th}>المبلغ</th><th style={th}>البيان</th><th style={th}>الحالة</th><th style={th}></th></tr></thead>
+          <tbody>
+            {filtered.map((r) => (
+              <React.Fragment key={r.id}>
+                <tr>
+                  <td style={td}>{r.date}</td>
+                  <td style={td}>{r.requestedBy}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmt(r.amount)}</td>
+                  <td style={td}>{r.description}</td>
+                  <td style={{ ...td, color: r.status === "rejected" ? C.danger : C.warn, fontWeight: 700 }}>{r.status === "rejected" ? "مرفوضة" : "قيد المراجعة (" + r.stage + ")"}</td>
+                  <td style={td}>
+                    {r.status === "pending" && r.stage === stageKey && (
+                      <>
+                        <span onClick={() => approve(r)} style={{ cursor: "pointer", color: C.success, fontWeight: 700, marginLeft: 10 }}>{busy === r.id ? "..." : "✅ اعتماد"}</span>
+                        <span onClick={() => setRejectingId(rejectingId === r.id ? null : r.id)} style={{ cursor: "pointer", color: C.danger, fontWeight: 700 }}>رفض</span>
+                      </>
+                    )}
+                  </td>
+                </tr>
+                {rejectingId === r.id && (
+                  <tr>
+                    <td colSpan={6} style={{ background: C.blueSoft, padding: 12 }}>
+                      <input value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} placeholder="سبب الرفض" style={{ ...inputStyle2, maxWidth: 320, display: "inline-block", marginLeft: 10 }} />
+                      <button onClick={() => reject(r)} style={smallBtn}>تأكيد الرفض</button>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+            {filtered.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد طلبات</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ExpenseRequestTab({ currentUser, institutionName, users }) {
   const institutionId = currentUser.institutionId || DEFAULT_INSTITUTION_ID;
   const [treasuries, setTreasuries] = useState([]);
@@ -2693,14 +2913,14 @@ function ExpenseRequestTab({ currentUser, institutionName, users }) {
     try {
       const payload = {
         treasuryId, amount: amt, date, category: category || "", description: description.trim(),
-        institutionId, status: "pending",
+        institutionId, status: "pending", stage: "accountant", approvals: [],
         requestedById: currentUser.id, requestedBy: currentUser.name, requestedByRole: currentUser.role,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       };
       await EXPENSE_REQUESTS_COL.add(payload);
       setLastSubmitted(payload);
       setAmount(""); setDescription(""); setCategory("");
-      setMsg("✅ تم إرسال طلب الصرف للمدير المالي للمراجعة");
+      setMsg("✅ تم إرسال طلب الصرف — هيمر بمراحل الاعتماد: المحاسب ← المراجع المالي ← المدير العام ← مسؤول الصرف");
     } catch (e) { setMsg("خطأ: " + e.message); }
     setSaving(false);
   }
@@ -5077,8 +5297,10 @@ function TreasuryApprovals({ currentUser, treasuries, institutionId, institution
     return unsub;
   }, [institutionId]);
 
-  const filtered = requests.filter((r) => filterStatus === "all" || r.status === filterStatus);
-  const pendingCount = requests.filter((r) => r.status === "pending").length;
+  // بس الطلبات اللي وصلت لمرحلة "مسؤول الصرف" (أو الطلبات القديمة اللي اتسجّلت قبل نظام المراحل، عشان ما تتعلقش)
+  const atDisbursementStage = (r) => !r.stage || r.stage === "disbursement";
+  const filtered = requests.filter((r) => atDisbursementStage(r) && (filterStatus === "all" || r.status === filterStatus));
+  const pendingCount = requests.filter((r) => atDisbursementStage(r) && r.status === "pending").length;
 
   async function approve(r) {
     setBusy(r.id); setMsg("");
@@ -5798,10 +6020,13 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
     const list = allUsers.slice();
     if (editingId) {
       const idx = list.findIndex((u) => u.id === editingId);
-      if (idx > -1) list[idx] = { ...list[idx], ...payload, institutionId };
+      if (idx > -1) {
+        const passwordChanged = list[idx].password !== payload.password;
+        list[idx] = { ...list[idx], ...payload, institutionId, mustChangePassword: passwordChanged ? true : (list[idx].mustChangePassword || false) };
+      }
     } else {
       if (list.some((u) => u.username === payload.username.trim())) { setMsg("اسم المستخدم موجود بالفعل"); return; }
-      list.push({ id: uid(), ...payload, institutionId });
+      list.push({ id: uid(), ...payload, institutionId, mustChangePassword: true });
     }
     await USERS_DOC.set({ list });
     setForm(emptyUser); setEditingId(null); setMsg("");
@@ -5847,11 +6072,13 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
                     <td style={td}>
                       <select value={r.role} onChange={(e) => setBulkField(r._rid, "role", e.target.value)} style={{ ...inputStyle2, minWidth: 110 }}>
                         <option value="admin">أدمن</option>
-                        <option value="financial_manager">مدير مالي</option>
+                        <option value="financial_manager">مدير مالي (مسؤول الصرف)</option>
                         <option value="accountant">محاسب</option>
                         <option value="branch_manager">مدير فرع</option>
                         <option value="cashier">كاشير</option>
                         <option value="custody_holder">أمين عهدة</option>
+                        <option value="financial_reviewer">مراجع مالي</option>
+                        <option value="general_manager">مدير عام</option>
                       </select>
                     </td>
                     <td style={td}>
@@ -5887,9 +6114,10 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
           <div style={{ flex: "1 1 150px" }}>
             <label style={smallLabel}>الصلاحية</label>
             <select value={form.role} onChange={(e) => set("role", e.target.value)} style={inputStyle2}>
-              <option value="admin">أدمن</option><option value="financial_manager">مدير مالي</option><option value="accountant">محاسب</option>
+              <option value="admin">أدمن</option><option value="financial_manager">مدير مالي (مسؤول الصرف)</option><option value="accountant">محاسب</option>
               <option value="branch_manager">مدير فرع</option><option value="cashier">كاشير</option>
               <option value="custody_holder">أمين عهدة</option>
+              <option value="financial_reviewer">مراجع مالي</option><option value="general_manager">مدير عام</option>
             </select>
           </div>
           {needsBranch && !isMultiBranchRole && (
@@ -5942,10 +6170,18 @@ function UsersSettings({ users, allUsers, meta, institutionId }) {
                   <td style={td}>{ROLE_LABELS[u.role]}</td><td style={td}>{userBranches(u).join("، ") || "—"}</td>
                   <td style={td}>
                     <span onClick={() => editUser(u)} style={{ cursor: "pointer", color: C.blue, marginLeft: 10 }}>تعديل</span>
-                    <span onClick={() => removeUser(u.id)} style={{ cursor: "pointer", color: C.danger }}>حذف</span>
+                    <span onClick={() => removeUser(u.id)} style={{ cursor: "pointer", color: C.danger, marginLeft: 10 }}>حذف</span>
+                    {u.phone && (
+                      <a href={whatsappLink(u.phone, `مرحبًا ${u.name}،\nسجّل كلمة مرورك الخاصة بنظام الكاشير من الرابط ده:\nhttps://abbelroufmohamed-rgb.github.io/deera-fares-cash/?setpass=${u.id}\n\nاسم المستخدم بتاعك: ${u.username}`)}
+                        target="_blank" rel="noreferrer" style={{
+                          display: "inline-flex", alignItems: "center", gap: 4, background: "#25D366", color: "#fff",
+                          borderRadius: 14, padding: "3px 10px", fontSize: 11.5, fontWeight: 700, textDecoration: "none",
+                        }}>📱 راسله بكلمة مرور</a>
+                    )}
                   </td>
                 </tr>
               ))}
+              {users.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد مستخدمين</td></tr>}
             </tbody>
           </table>
         </div>
