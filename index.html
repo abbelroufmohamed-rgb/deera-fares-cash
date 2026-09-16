@@ -4956,6 +4956,7 @@ function TreasuryVouchers({ currentUser, treasuries, txs, institutionName, insti
   const [typeFilter, setTypeFilter] = useState("all");
   const [fromDate, setFromDate] = useState(firstDayOfMonth());
   const [toDate, setToDate] = useState(todayStr());
+  const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [loadingVoucherId, setLoadingVoucherId] = useState(null);
   const [editingId, setEditingId] = useState(null);
@@ -4965,13 +4966,24 @@ function TreasuryVouchers({ currentUser, treasuries, txs, institutionName, insti
   const voucherTypes = ["deposit", "expense", "custody_out", "transfer_out"];
   const EDITABLE_TYPES = ["deposit", "expense", "transfer_out"];
   const rows = useMemo(() => {
+    const term = search.trim().toLowerCase();
     return txs
       .filter((t) => voucherTypes.includes(t.type))
       .filter((t) => treasuryId === "all" || t.treasuryId === treasuryId)
       .filter((t) => typeFilter === "all" || t.type === typeFilter)
-      .filter((t) => t.date >= fromDate && t.date <= toDate)
+      .filter((t) => {
+        // لو فيه كلمة بحث، بنفتّش في كل الفترات (مش بس المحدّدة بالتاريخ) — عشان السند القديم يتلاقى برضو
+        if (term) return true;
+        return t.date >= fromDate && t.date <= toDate;
+      })
+      .filter((t) => {
+        if (!term) return true;
+        const hay = [t.voucherNo, t.description, t.employeeName, String(t.amount || ""), VOUCHER_KIND_TITLE[t.type]]
+          .filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(term);
+      })
       .sort((a, b) => b.date.localeCompare(a.date));
-  }, [txs, treasuryId, typeFilter, fromDate, toDate]);
+  }, [txs, treasuryId, typeFilter, fromDate, toDate, search]);
 
   async function openVoucher(t) {
     setLoadingVoucherId(t.id);
@@ -5058,7 +5070,12 @@ function TreasuryVouchers({ currentUser, treasuries, txs, institutionName, insti
           </div>
           <div><label style={smallLabel}>من تاريخ</label><input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={inputStyle2} /></div>
           <div><label style={smallLabel}>إلى تاريخ</label><input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={inputStyle2} /></div>
+          <div>
+            <label style={smallLabel}>🔍 بحث (رقم السند / البيان / المبلغ)</label>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle2, minWidth: 220 }} placeholder="اكتب رقم السند أو أي تفاصيل..." />
+          </div>
         </div>
+        {search.trim() && <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>🔍 البحث شغّال على كل الفترات (مش بس التاريخ المحدد فوق) — عشان تلاقي أي سند قديم.</div>}
         {actionMsg && <div style={{ color: C.danger, fontSize: 13, marginTop: 6 }}>{actionMsg}</div>}
         <div style={{ overflowX: "auto", marginTop: 12 }}>
           <table style={tblStyle}>
