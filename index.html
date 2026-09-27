@@ -144,6 +144,7 @@ const ROLE_LABELS = {
 const TAB_DEFS = [
   { id: "fmDashboard", icon: "bank", label: "لوحة التحكم" },
   { id: "entry", icon: "entry", label: "تسجيل وردية" },
+  { id: "bulkEdit", icon: "entry", label: "تعديل جماعي للورديات" },
   { id: "report", icon: "report", label: "التقارير" },
   { id: "expenseRequest", icon: "send", label: "طلب صرف" },
   { id: "approvalAccountant", icon: "send", label: "اعتماد المحاسب" },
@@ -157,6 +158,7 @@ const CONFIGURABLE_ROLES = ["admin", "financial_manager", "accountant", "branch_
 const DEFAULT_TAB_PERMISSIONS = {
   fmDashboard: ["financial_manager", "admin"],
   entry: ["admin", "accountant", "branch_manager", "cashier"],
+  bulkEdit: ["admin", "accountant"],
   report: ["admin", "accountant", "branch_manager", "cashier"],
   expenseRequest: ["admin", "financial_manager", "accountant", "branch_manager", "cashier", "custody_holder", "financial_reviewer", "general_manager"],
   approvalAccountant: ["accountant", "admin"],
@@ -1363,6 +1365,9 @@ function MainLayout({ currentUser, users, meta, institutions, institutionName, t
           <FinancialManagerDashboard currentUser={currentUser} institutionName={institutionName} setTab={setTab} />
         )}
         {tab === "entry" && <EntryTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
+        {tab === "bulkEdit" && (effectivePerms.bulkEdit || []).includes(currentUser.role) && (
+          <BulkShiftEditTab currentUser={currentUser} meta={meta} institutionId={institutionId} />
+        )}
         {tab === "report" && <ReportTab currentUser={currentUser} meta={meta} users={institutionUsers} institutionName={institutionName} />}
         {tab === "expenseRequest" && (
           <ExpenseRequestTab currentUser={currentUser} institutionName={institutionName} users={institutionUsers} />
@@ -4950,6 +4955,119 @@ const VOUCHER_KIND_TITLE = {
   custody_out: "سند صرف عهدة",
   transfer_out: "سند تحويل بين خزائن",
 };
+
+/* ============ تعديل جماعي للورديات: لتصحيح خطأ مشترك (زي التحصيل أو فودكس كاش) في عدد كبير من الورديات مرة واحدة، بدل فتح كل وردية لوحدها ============ */
+function BulkShiftEditTab({ currentUser, meta, institutionId }) {
+  const [fromDate, setFromDate] = useState(firstDayOfMonth());
+  const [toDate, setToDate] = useState(todayStr());
+  const [branchFilter, setBranchFilter] = useState("all");
+  const [cashierFilter, setCashierFilter] = useState("");
+  const [shifts, setShifts] = useState(null);
+  const [edits, setEdits] = useState({}); // { shiftId: { collection: "...", foodicsCash: "..." } }
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    const unsub = SHIFTS_COL.orderBy("date", "desc").limit(400).onSnapshot((snap) => {
+      let data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      data = data.filter((r) => (r.institutionId || DEFAULT_INSTITUTION_ID) === institutionId);
+      setShifts(data);
+    });
+    return unsub;
+  }, [institutionId]);
+
+  const filtered = (shifts || []).filter((r) => {
+    if (r.date < fromDate || r.date > toDate) return false;
+    if (branchFilter !== "all" && r.branch !== branchFilter) return false;
+    if (cashierFilter.trim() && !r.cashierName?.toLowerCase().includes(cashierFilter.trim().toLowerCase())) return false;
+    return true;
+  });
+
+  function setEditValue(shiftId, field, value) {
+    setEdits((e) => ({ ...e, [shiftId]: { ...e[shiftId], [field]: value } }));
+  }
+  function getValue(r, field) {
+    return edits[r.id]?.[field] !== undefined ? edits[r.id][field] : r[field];
+  }
+
+  const editedCount = Object.keys(edits).filter((id) => Object.keys(edits[id]).length > 0).length;
+
+  async function saveAll() {
+    if (editedCount === 0) { setMsg("مفيش أي تعديل لسه اتكتب"); return; }
+    if (!confirm(`هل تريد حفظ التعديلات على ${editedCount} وردية؟`)) return;
+    setSaving(true); setMsg("");
+    try {
+      for (const shiftId of Object.keys(edits)) {
+        const changes = edits[shiftId];
+        if (Object.keys(changes).length === 0) continue;
+        const original = (shifts || []).find((r) => r.id === shiftId);
+        if (!original) continue;
+        const merged = { ...original, ...changes };
+        const calc = computeShift(merged);
+        const payload = { ...changes, ...calc, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+        await SHIFTS_COL.doc(shiftId).update(payload);
+        await syncShortageNotification(shiftId, merged, meta, institutionId);
+      }
+      setMsg(`✅ تم حفظ التعديلات على ${editedCount} وردية بنجاح`);
+      setEdits({});
+    } catch (e) { setMsg("خطأ أثناء الحفظ: " + e.message); }
+    setSaving(false);
+  }
+
+  return (
+    <div>
+      <div style={cardStyle} className="no-print">
+        <div style={cardTitle}>✏️ تعديل جماعي للورديات</div>
+        <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>لتصحيح خطأ مشترك (زي مبلغ التحصيل أو فودكس كاش) في عدد كبير من الورديات مرة واحدة. فلتر الأول عشان توصل للورديات المطلوبة، وبعدين عدّل القيم مباشرة في الجدول واحفظ الكل مرة واحدة.</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div><label style={smallLabel}>من تاريخ</label><input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={inputStyle2} /></div>
+          <div><label style={smallLabel}>إلى تاريخ</label><input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={inputStyle2} /></div>
+          <div>
+            <label style={smallLabel}>الفرع</label>
+            <select value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} style={inputStyle2}>
+              <option value="all">كل الفروع</option>
+              {(meta.branches || []).map((b) => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </div>
+          <div><label style={smallLabel}>اسم الكاشير (اختياري)</label><input value={cashierFilter} onChange={(e) => setCashierFilter(e.target.value)} style={inputStyle2} /></div>
+        </div>
+        {msg && <div style={{ marginTop: 10, fontSize: 13.5, color: msg.startsWith("✅") ? C.success : C.danger }}>{msg}</div>}
+      </div>
+
+      <div style={cardStyle} className="no-print">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+          <div style={{ ...cardTitle, marginBottom: 0, border: "none", padding: 0 }}>📋 الورديات المطابقة ({filtered.length}) {editedCount > 0 && <span style={{ background: C.warn, color: "#fff", borderRadius: 20, padding: "2px 10px", fontSize: 12, marginRight: 8 }}>{editedCount} معدّلة لسه ما اتحفظتش</span>}</div>
+          <button onClick={saveAll} disabled={saving || editedCount === 0} style={smallBtn}>{saving ? "جارِ الحفظ..." : `💾 حفظ كل التعديلات (${editedCount})`}</button>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead><tr><th style={th}>التاريخ</th><th style={th}>الفرع</th><th style={th}>الوردية</th><th style={th}>الكاشير</th><th style={th}>مبلغ التحصيل</th><th style={th}>فودكس كاش</th><th style={th}>العجز/الزيادة (محسوب)</th></tr></thead>
+            <tbody>
+              {filtered.slice(0, 200).map((r) => {
+                const merged = { ...r, collection: getValue(r, "collection"), foodicsCash: getValue(r, "foodicsCash") };
+                const liveCalc = computeShift(merged);
+                const isEdited = edits[r.id] && Object.keys(edits[r.id]).length > 0;
+                return (
+                  <tr key={r.id} style={{ background: isEdited ? "#fffbeb" : undefined }}>
+                    <td style={td}>{r.date}</td>
+                    <td style={td}>{r.branch}</td>
+                    <td style={td}>{r.shiftLabel}</td>
+                    <td style={td}>{r.cashierName}</td>
+                    <td style={td}><input type="number" step="0.01" value={getValue(r, "collection")} onChange={(e) => setEditValue(r.id, "collection", e.target.value)} style={{ ...inputStyle2, width: 110 }} /></td>
+                    <td style={td}><input type="number" step="0.01" value={getValue(r, "foodicsCash")} onChange={(e) => setEditValue(r.id, "foodicsCash", e.target.value)} style={{ ...inputStyle2, width: 110 }} /></td>
+                    <td style={{ ...td, fontWeight: 700, color: liveCalc.totalShortage < 0 ? C.danger : liveCalc.totalShortage > 0 ? C.success : C.muted }}>{fmt(liveCalc.totalShortage)}</td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && <tr><td colSpan={7} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد ورديات مطابقة</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {filtered.length > 200 && <div style={{ fontSize: 11.5, color: C.warn, marginTop: 8 }}>⚠️ فيه {filtered.length} وردية مطابقة — بنعرض أول 200 بس. ضيّق الفلتر لو محتاج غيرهم.</div>}
+      </div>
+    </div>
+  );
+}
 
 function TreasuryVouchers({ currentUser, treasuries, txs, institutionName, institutionId }) {
   const [treasuryId, setTreasuryId] = useState("all");
