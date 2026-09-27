@@ -4963,7 +4963,8 @@ function BulkShiftEditTab({ currentUser, meta, institutionId }) {
   const [branchFilter, setBranchFilter] = useState("all");
   const [cashierFilter, setCashierFilter] = useState("");
   const [shifts, setShifts] = useState(null);
-  const [edits, setEdits] = useState({}); // { shiftId: { collection: "...", foodicsCash: "..." } }
+  const [edits, setEdits] = useState({}); // { shiftId: { collection: "...", foodicsCash: "...", branch: "...", cashierName: "..." } }
+  const [expandedId, setExpandedId] = useState(null); // الوردية المفتوحة حاليًا لعرض كل حقولها
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -4991,6 +4992,7 @@ function BulkShiftEditTab({ currentUser, meta, institutionId }) {
   }
 
   const editedCount = Object.keys(edits).filter((id) => Object.keys(edits[id]).length > 0).length;
+  const cashierOptions = Array.from(new Set([...(meta.cashierNames || []), ...(shifts || []).map((s) => s.cashierName).filter(Boolean)]));
 
   async function saveAll() {
     if (editedCount === 0) { setMsg("مفيش أي تعديل لسه اتكتب"); return; }
@@ -5018,7 +5020,7 @@ function BulkShiftEditTab({ currentUser, meta, institutionId }) {
     <div>
       <div style={cardStyle} className="no-print">
         <div style={cardTitle}>✏️ تعديل جماعي للورديات</div>
-        <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>لتصحيح خطأ مشترك (زي مبلغ التحصيل أو فودكس كاش) في عدد كبير من الورديات مرة واحدة. فلتر الأول عشان توصل للورديات المطلوبة، وبعدين عدّل القيم مباشرة في الجدول واحفظ الكل مرة واحدة.</div>
+        <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 14 }}>لتصحيح أي بيانات (اسم الكاشير، الفرع، أو أي مبلغ) في عدد كبير من الورديات مرة واحدة. فلتر الأول عشان توصل للورديات المطلوبة، وبعدين دوس "توسيع" جنب أي وردية عشان تعدّل كل بياناتها، واحفظ الكل مرة واحدة في الآخر.</div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <div><label style={smallLabel}>من تاريخ</label><input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={inputStyle2} /></div>
           <div><label style={smallLabel}>إلى تاريخ</label><input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={inputStyle2} /></div>
@@ -5041,25 +5043,72 @@ function BulkShiftEditTab({ currentUser, meta, institutionId }) {
         </div>
         <div style={{ overflowX: "auto" }}>
           <table>
-            <thead><tr><th style={th}>التاريخ</th><th style={th}>الفرع</th><th style={th}>الوردية</th><th style={th}>الكاشير</th><th style={th}>مبلغ التحصيل</th><th style={th}>فودكس كاش</th><th style={th}>العجز/الزيادة (محسوب)</th></tr></thead>
+            <thead><tr><th style={th}>التاريخ</th><th style={th}>الفرع</th><th style={th}>الوردية</th><th style={th}>الكاشير</th><th style={th}>مبلغ التحصيل</th><th style={th}>فودكس كاش</th><th style={th}>العجز/الزيادة (محسوب)</th><th style={th}></th></tr></thead>
             <tbody>
               {filtered.slice(0, 200).map((r) => {
-                const merged = { ...r, collection: getValue(r, "collection"), foodicsCash: getValue(r, "foodicsCash") };
+                const merged = { ...r, ...edits[r.id] };
                 const liveCalc = computeShift(merged);
                 const isEdited = edits[r.id] && Object.keys(edits[r.id]).length > 0;
+                const isOpen = expandedId === r.id;
                 return (
-                  <tr key={r.id} style={{ background: isEdited ? "#fffbeb" : undefined }}>
-                    <td style={td}>{r.date}</td>
-                    <td style={td}>{r.branch}</td>
-                    <td style={td}>{r.shiftLabel}</td>
-                    <td style={td}>{r.cashierName}</td>
-                    <td style={td}><input type="number" step="0.01" value={getValue(r, "collection")} onChange={(e) => setEditValue(r.id, "collection", e.target.value)} style={{ ...inputStyle2, width: 110 }} /></td>
-                    <td style={td}><input type="number" step="0.01" value={getValue(r, "foodicsCash")} onChange={(e) => setEditValue(r.id, "foodicsCash", e.target.value)} style={{ ...inputStyle2, width: 110 }} /></td>
-                    <td style={{ ...td, fontWeight: 700, color: liveCalc.totalShortage < 0 ? C.danger : liveCalc.totalShortage > 0 ? C.success : C.muted }}>{fmt(liveCalc.totalShortage)}</td>
-                  </tr>
+                  <React.Fragment key={r.id}>
+                    <tr style={{ background: isEdited ? "#fffbeb" : undefined }}>
+                      <td style={td}>{getValue(r, "date")}</td>
+                      <td style={td}>{getValue(r, "branch")}</td>
+                      <td style={td}>{getValue(r, "shiftLabel")}</td>
+                      <td style={td}>{getValue(r, "cashierName")}</td>
+                      <td style={td}><input type="number" step="0.01" value={getValue(r, "collection")} onChange={(e) => setEditValue(r.id, "collection", e.target.value)} style={{ ...inputStyle2, width: 100 }} /></td>
+                      <td style={td}><input type="number" step="0.01" value={getValue(r, "foodicsCash")} onChange={(e) => setEditValue(r.id, "foodicsCash", e.target.value)} style={{ ...inputStyle2, width: 100 }} /></td>
+                      <td style={{ ...td, fontWeight: 700, color: liveCalc.totalShortage < 0 ? C.danger : liveCalc.totalShortage > 0 ? C.success : C.muted }}>{fmt(liveCalc.totalShortage)}</td>
+                      <td style={td}><span onClick={() => setExpandedId(isOpen ? null : r.id)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>{isOpen ? "إخفاء" : "⚙️ توسيع"}</span></td>
+                    </tr>
+                    {isOpen && (
+                      <tr>
+                        <td colSpan={8} style={{ background: C.blueSoft, padding: 16 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: C.navy, marginBottom: 10 }}>تعديل كل بيانات هذه الوردية</div>
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+                            <div>
+                              <label style={smallLabel}>التاريخ</label>
+                              <input type="date" value={getValue(r, "date")} onChange={(e) => setEditValue(r.id, "date", e.target.value)} style={inputStyle2} />
+                            </div>
+                            <div>
+                              <label style={smallLabel}>الفرع</label>
+                              <select value={getValue(r, "branch")} onChange={(e) => setEditValue(r.id, "branch", e.target.value)} style={inputStyle2}>
+                                {(meta.branches || []).map((b) => <option key={b} value={b}>{b}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label style={smallLabel}>الوردية</label>
+                              <select value={getValue(r, "shiftLabel")} onChange={(e) => setEditValue(r.id, "shiftLabel", e.target.value)} style={inputStyle2}>
+                                {(meta.shifts || []).map((s) => <option key={s} value={s}>{s}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label style={smallLabel}>اسم الكاشير</label>
+                              <input list={"bulk-cashiers-" + r.id} value={getValue(r, "cashierName")} onChange={(e) => setEditValue(r.id, "cashierName", e.target.value)} style={inputStyle2} />
+                              <datalist id={"bulk-cashiers-" + r.id}>{cashierOptions.map((n) => <option key={n} value={n} />)}</datalist>
+                            </div>
+                          </div>
+                          {FIELD_GROUPS.map((group) => (
+                            <div key={group.title} style={{ marginBottom: 12 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: group.color, marginBottom: 6 }}>{group.icon} {group.title}</div>
+                              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                                {group.fields.map((f) => (
+                                  <div key={f.key} style={f.full ? { flex: "1 1 100%" } : {}}>
+                                    <label style={smallLabel}>{f.label}</label>
+                                    <input type={f.type} value={getValue(r, f.key) || ""} onChange={(e) => setEditValue(r.id, f.key, e.target.value)} style={{ ...inputStyle2, width: f.full ? "100%" : 130 }} />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
-              {filtered.length === 0 && <tr><td colSpan={7} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد ورديات مطابقة</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={8} style={{ ...td, textAlign: "center", color: "#9ca3af" }}>لا يوجد ورديات مطابقة</td></tr>}
             </tbody>
           </table>
         </div>
